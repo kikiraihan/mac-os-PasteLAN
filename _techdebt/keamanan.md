@@ -29,6 +29,6 @@ Pilihan perbaikan:
 
 - Kunci ada di fragment URL → tidak dikirim ke jaringan, tapi tetap tersimpan di riwayat / bookmark browser HP
   (bisa tersinkron ke iCloud / Chrome Sync) dan di `localStorage` halaman.
-- Kunci tidak kedaluwarsa otomatis. Opsi "Ganti link tiap N hari / tiap aplikasi dibuka" bisa ditambahkan.
+- Kunci tidak kedaluwarsa otomatis. Opsi "Reset link tiap N hari / tiap aplikasi dibuka" bisa ditambahkan.
 - Enkripsi gambar besar di HP memakai JS murni (±0,7 detik per 10 MB di desktop, beberapa detik di HP untuk 30 MB)
   dan berjalan di thread utama. Bisa dipindah ke Web Worker kalau terasa macet.
