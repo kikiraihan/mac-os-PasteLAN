@@ -31,6 +31,23 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # server (Go, tanpa dependensi): tes lalu binary Linux untuk VPS
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache: false
+
+      - name: Tes & build server
+        working-directory: server
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::jalankan gofmt -w ."; exit 1; }
+          go vet ./...
+          go test -race -count=1 ./...
+          mkdir -p ../dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w" -o ../dist/pastelan-server-linux-$arch .
+          done
+
       - name: Build PasteLAN.app (universal)
         run: ARCH=universal ./scripts/build.sh
 
@@ -66,6 +83,7 @@ jobs:
           path: |
             dist/PasteLAN.zip
             dist/install-PasteLAN.zip
+            dist/pastelan-server-linux-*
 
       - name: Rilis (kalau push tag v*)
         if: startsWith(github.ref, 'refs/tags/v')
@@ -75,6 +93,8 @@ jobs:
             dist/PasteLAN.zip
             dist/PasteLAN.zip.sig
             dist/install-PasteLAN.zip
+            dist/pastelan-server-linux-amd64
+            dist/pastelan-server-linux-arm64
 
       # merge ke main dengan versi baru (tag belum ada) → tag + rilis dibuat otomatis
       - name: Rilis otomatis (push ke main, versi belum dirilis)
@@ -89,3 +109,5 @@ jobs:
             dist/PasteLAN.zip
             dist/PasteLAN.zip.sig
             dist/install-PasteLAN.zip
+            dist/pastelan-server-linux-amd64
+            dist/pastelan-server-linux-arm64

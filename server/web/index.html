@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="PasteLAN">
+<meta name="referrer" content="no-referrer">
+<title>PasteLAN</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header><span id="dot" class="dot"></span><h1>PasteLAN</h1><span id="status"></span></header>
+<main>
+  <form id="login" class="card" hidden>
+    <h2 class="title">Masuk</h2>
+    <p class="hint">Masukkan password server PasteLAN. Cukup sekali per perangkat.</p>
+    <label>Password<input id="password" type="password" autocomplete="current-password" required></label>
+    <label>Nama perangkat<input id="devname" maxlength="40" autocomplete="off"></label>
+    <button id="loginBtn" type="submit">Masuk</button>
+    <div id="loginErr" class="err"></div>
+  </form>
+
+  <div id="app" hidden>
+    <div class="card">
+      <textarea id="input" placeholder="Tempel teks di sini, lalu kirim…"></textarea>
+      <div class="row">
+        <button id="send" class="grow">Kirim</button>
+        <button id="pick" class="ghost">Kirim gambar</button>
+        <input id="file" type="file" accept="image/*" multiple hidden>
+      </div>
+      <div class="hint">Muncul di Mac & perangkat lain dalam ±1 detik. Gambar juga bisa ditempel langsung di kotak teks.</div>
+    </div>
+    <h2>Clipboard</h2>
+    <div id="list"></div>
+    <details id="settings" class="card">
+      <summary>Pengaturan</summary>
+      <h3>Perangkat yang login</h3>
+      <div id="devices"></div>
+      <div class="row">
+        <button id="clear" class="ghost">Hapus riwayat</button>
+        <button id="logout" class="ghost danger">Keluar dari perangkat ini</button>
+      </div>
+    </details>
+  </div>
+</main>
+<div id="toast"></div>
+</body>
+</html>

@@ -1,0 +1,36 @@
+# systemd: /etc/systemd/system/pastelan.service
+# Password di /etc/pastelan.env (chmod 600), isinya:  PASTELAN_PASSWORD=...
+[Unit]
+Description=PasteLAN server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/pastelan-server
+EnvironmentFile=/etc/pastelan.env
+Environment=PASTELAN_ADDR=127.0.0.1:8080
+Environment=PASTELAN_DATA=/var/lib/pastelan
+Restart=on-failure
+
+# pengetatan: user sementara tanpa hak, hanya boleh menulis /var/lib/pastelan
+DynamicUser=yes
+StateDirectory=pastelan
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
