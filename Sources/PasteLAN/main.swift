@@ -589,7 +589,7 @@ final class Updater: NSObject {
 
     /// Kunci publik Ed25519 (base64) pemilik repo, dari `swift scripts/sign-release.swift keygen`.
     /// Update otomatis hanya dipasang kalau PasteLAN.zip.sig cocok dengan kunci ini; kosong → selalu lewat halaman rilis.
-    static let publicKey = ""
+    static let publicKey = "PTtPJWvtz/ZOCSWubniY+8mQwWJCb5uc/KEb9U1mGTg="
 
     /// Tanda tangan untuk "PasteLAN <tag>\n" + isi zip (lihat scripts/sign-release.swift)
     static func verify(zip: URL, tag: String, signature: String) -> Bool {
