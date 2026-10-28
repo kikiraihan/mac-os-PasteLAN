@@ -36,5 +36,9 @@ Merge ke `main` dengan versi yang belum punya tag akan otomatis membuat tag `v<v
 - Rencana kerja ada di `_todo/` (satu folder per inisiatif: file sprint + `00-tracker.md`).
   Perbarui tracker setiap kali tugas selesai.
 - Ide yang ditunda / utang teknis ada di `_techdebt/`.
+- Keamanan: semua isi `/api/` dienkripsi ChaCha20-Poly1305 (Swift `CryptoKit` ⇄ JS `AEAD` di `enum Page`, format
+  `nonce + ciphertext + tag`, AAD `PL1|req|…`, `PL1|body|…`, `PL1|resp|…`). Ubah format di kedua sisi sekaligus.
+  Auto-update wajib tanda tangan Ed25519 (`scripts/sign-release.swift`). Jangan pernah meminta / menyimpan kunci privat.
+  Sisa temuan audit di `_techdebt/keamanan.md`.
 - Tidak ada Mac di lingkungan agen cloud: cek sintaks dengan `swiftc -parse Sources/PasteLAN/main.swift`
   (toolchain Swift Linux), build sebenarnya dicek oleh GitHub Actions (macOS).
