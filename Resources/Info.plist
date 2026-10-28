@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>PasteLAN</string>
+    <key>CFBundleDisplayName</key><string>PasteLAN</string>
+    <key>CFBundleIdentifier</key><string>id.local.pastelan</string>
+    <key>CFBundleExecutable</key><string>PasteLAN</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSLocalNetworkUsageDescription</key><string>PasteLAN membuka server kecil di jaringan lokal supaya HP di Wi-Fi yang sama bisa bertukar teks &amp; gambar dengan Mac ini.</string>
+</dict>
+</plist>
