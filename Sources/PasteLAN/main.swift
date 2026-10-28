@@ -487,6 +487,8 @@ final class HTTPServer {
     private var conns: [ObjectIdentifier: HTTPConnection] = [:]
     private(set) var port: UInt16?
     private(set) var failed = false
+    /// Koneksi masuk terakhir (diterima / ditolak) → ditampilkan di menu untuk cek apakah HP sampai ke Mac
+    private(set) var lastPeer: (host: String, time: Date, note: String)?
     var handler: ((HTTPRequest, HTTPConnection) -> Void)?
     var gate: (_ method: String, _ path: String, _ headers: [String: String]) -> Gate = { _, _, _ in
         .reject(status: 403, json: ["error": "key"])
@@ -503,6 +505,7 @@ final class HTTPServer {
     func start(from first: UInt16, tries: Int = 12) {
         stop()
         failed = false
+        lastPeer = nil
         listen(first, remaining: tries)
     }
 
@@ -544,15 +547,22 @@ final class HTTPServer {
 
     private func accept(_ nc: NWConnection) {
         // hanya perangkat di jaringan lokal (bukan VPN / IP publik), dan satu perangkat tidak boleh memborong slot
+        let peer = HTTPServer.peerHost(nc.endpoint)
         guard HTTPServer.isLocalPeer(nc.endpoint) else {
+            lastPeer = (peer, Date(), "ditolak: bukan alamat lokal")
             return refuse(nc, 403, "PasteLAN hanya melayani perangkat di jaringan lokal yang sama dengan Mac. " +
-                          "Alamat perangkat ini (\(HTTPServer.peerHost(nc.endpoint))) tidak dikenali sebagai alamat lokal.")
+                          "Alamat perangkat ini (\(peer)) tidak dikenali sebagai alamat lokal.")
         }
-        guard conns.count < maxConnections else { return refuse(nc, 503, "PasteLAN sedang sibuk, coba lagi sebentar.") }
+        guard conns.count < maxConnections else {
+            lastPeer = (peer, Date(), "ditolak: server penuh")
+            return refuse(nc, 503, "PasteLAN sedang sibuk, coba lagi sebentar.")
+        }
         let c = HTTPConnection(nc, maxBody: maxBody)
         guard conns.values.filter({ $0.host == c.host }).count < maxPerHost else {
+            lastPeer = (peer, Date(), "ditolak: terlalu banyak koneksi")
             return refuse(nc, 503, "Terlalu banyak koneksi dari perangkat ini, coba lagi sebentar.")
         }
+        lastPeer = (peer, Date(), "diterima")
         let key = ObjectIdentifier(c)
         conns[key] = c
         c.gate = { [weak self] m, p, h in self?.gate(m, p, h) ?? .reject(status: 403, json: ["error": "key"]) }
@@ -1076,6 +1086,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 st.isEnabled = false
                 menu.addItem(st)
             }
+            if server.running {
+                // HP tidak bisa membuka halaman? Kalau di sini tidak muncul IP HP, permintaannya tidak sampai ke Mac
+                let text: String
+                if let p = server.lastPeer {
+                    let f = DateFormatter()
+                    f.dateFormat = "HH.mm.ss"
+                    text = "Koneksi masuk terakhir: \(p.host), \(f.string(from: p.time)) (\(p.note))"
+                } else {
+                    text = "Belum ada koneksi masuk sejak server dimulai"
+                }
+                let lp = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+                lp.isEnabled = false
+                menu.addItem(lp)
+            }
         }
 
         menu.addItem(.separator())
@@ -1106,7 +1130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add("Simpan juga gambar dari HP ke Unduhan", #selector(toggleSaveImages), on: d.bool(forKey: "saveImages"))
 
         menu.addItem(.separator())
-        add("Ganti link (putuskan semua HP)…", #selector(regenerateKey))
+        add("Reset link (putuskan semua HP)…", #selector(resetLink))
         add("Buka saat login", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled)
         add("Cara pakai…", #selector(showHelp))
         menu.addItem(updater.menuItem)
@@ -1198,11 +1222,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // HP yang sedang menunggu langsung diberi session baru → daftarnya dikosongkan
         wakeWaiters()
     }
-    @objc func regenerateKey() {
+    /// Kunci baru + server dimulai ulang (port & IP dibaca ulang) → semua link lama tidak berlaku
+    @objc func resetLink() {
         let a = NSAlert()
-        a.messageText = "Ganti link PasteLAN?"
-        a.informativeText = "Semua HP yang terhubung akan terputus dan harus scan QR code yang baru."
-        a.addButton(withTitle: "Ganti link")
+        a.messageText = "Reset link PasteLAN?"
+        a.informativeText = "Link diganti dan server dimulai ulang. Semua HP yang terhubung akan terputus dan harus " +
+            "scan QR code yang baru.\n\nPakai ini juga kalau HP tidak bisa membuka halaman PasteLAN."
+        a.addButton(withTitle: "Reset link")
         a.addButton(withTitle: "Batal")
         NSApp.activate(ignoringOtherApps: true)
         guard a.runModal() == .alertFirstButtonReturn else { return }
@@ -1210,6 +1236,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let list = waiters
         waiters.removeAll()
         for w in list { w.c.respondJSON(["error": "key"], status: 403) }
+        server.stop()
+        applySharing() // server menyala lagi kalau "Berbagi aktif"
     }
     @objc func toggleLogin() {
         do {
@@ -1242,7 +1270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         Privasi: semua isi dienkripsi antara Mac dan HP (kuncinya ada di QR code). Riwayat hanya disimpan di \
         memori (hilang saat PasteLAN ditutup). Isi dari password manager tidak pernah dikirim. \
-        "Ganti link" memutus semua HP yang pernah terhubung.
+        "Reset link" memutus semua HP yang pernah terhubung dan memulai ulang server.
         """
         NSApp.activate(ignoringOtherApps: true)
         a.runModal()

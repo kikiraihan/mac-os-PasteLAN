@@ -46,6 +46,11 @@ Dibuat dengan Swift + AppKit + Network.framework murni, satu file sumber, tanpa 
 - Wi-Fi **kantor / kampus / publik** sering memakai *client isolation* (antar-perangkat tidak bisa saling melihat).
   Kalau HP tidak bisa membuka halaman, pakai Wi-Fi rumah atau **hotspot HP**.
 - Server memakai port **8787** (otomatis pindah ke 8788, 8789, … kalau sedang dipakai aplikasi lain).
+- **HP tidak bisa membuka halaman?** Lihat baris **"Koneksi masuk terakhir"** di menu PasteLAN setelah mencoba dari HP:
+  - Tidak muncul IP HP → permintaan HP **tidak sampai** ke Mac. Pastikan HP tersambung ke Wi-Fi yang sama dengan Mac
+    (bukan data seluler), atau Wi-Fi-nya memblokir antar-perangkat.
+  - Muncul IP HP dengan keterangan "ditolak" → alasannya juga tampil di browser HP.
+  - Muncul "diterima" tapi tetap gagal → coba **Reset link (putuskan semua HP)…** lalu scan QR code yang baru.
 
 ### Keterbatasan
 
@@ -61,7 +66,7 @@ Dibuat dengan Swift + AppKit + Network.framework murni, satu file sumber, tanpa 
 - **Terenkripsi ujung-ke-ujung**: QR code berisi **kunci acak 256-bit** di bagian `#k=` link (bagian ini tidak
   pernah dikirim lewat jaringan). Semua teks, gambar, daftar riwayat, dan nama Mac dienkripsi **ChaCha20-Poly1305**
   (CryptoKit di Mac, JS bawaan halaman di HP). Penyadap di Wi-Fi yang sama hanya melihat ukuran & waktu, tidak bisa
-  membaca isi, memalsukan, atau mengulang request. **Ganti link** di menu memutus semua HP yang pernah terhubung.
+  membaca isi, memalsukan, atau mengulang request. **Reset link** di menu memutus semua HP yang pernah terhubung.
 - Riwayat **hanya disimpan di memori** dan hilang saat PasteLAN ditutup.
 - Isi dari **password manager** (bertanda `org.nspasteboard.ConcealedType`) **tidak pernah** dikirim ke HP.
 - Hanya perangkat di **jaringan lokal** yang dilayani (koneksi dari VPN / IP publik ditolak). Kunci dicek sebelum
@@ -70,7 +75,7 @@ Dibuat dengan Swift + AppKit + Network.framework murni, satu file sumber, tanpa 
 - **Salin link** tidak ikut Universal Clipboard ke perangkat Apple lain dan ditandai rahasia untuk clipboard manager.
 - Batasan: halamannya sendiri tetap dimuat lewat HTTP. Penyerang **aktif** di Wi-Fi yang sama (mis. ARP spoofing)
   secara teori bisa mengganti halaman itu untuk mencuri kunci. Di Wi-Fi publik yang tidak dipercaya, lebih aman
-  memakai hotspot HP sendiri, dan tekan **Ganti link** kalau ragu.
+  memakai hotspot HP sendiri, dan tekan **Reset link** kalau ragu.
 - **Update otomatis** hanya dipasang kalau file rilis cocok dengan tanda tangan Ed25519 pemilik repo
   (lihat [Rilis](#rilis)). Kalau tidak, PasteLAN hanya membuka halaman rilis.
 - Matikan **Berbagi aktif** di menu kapan saja untuk menutup port.
