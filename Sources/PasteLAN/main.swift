@@ -6,6 +6,7 @@
 // Build: ./scripts/build.sh  (butuh Xcode Command Line Tools)
 
 import Cocoa
+import CryptoKit
 import ImageIO
 import Network
 import CoreImage
@@ -23,14 +24,16 @@ func randomHex(_ bytes: Int = 16) -> String {
     (0..<bytes).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
 }
 
-/// Bandingkan token tanpa bocor lewat waktu eksekusi
-func sameToken(_ a: String?, _ b: String) -> Bool {
-    guard let a else { return false }
-    let x = Array(a.utf8), y = Array(b.utf8)
-    guard x.count == y.count else { return false }
-    var diff: UInt8 = 0
-    for i in 0..<x.count { diff |= x[i] ^ y[i] }
-    return diff == 0
+/// Base64 versi URL (tanpa + / =) → aman ditaruh di link & header
+func b64url(_ d: Data) -> String {
+    d.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+}
+
+func fromB64url(_ s: String) -> Data? {
+    var b = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+    while b.count % 4 != 0 { b += "=" }
+    return Data(base64Encoded: b)
 }
 
 func symbol(_ name: String) -> NSImage? {
@@ -327,6 +330,13 @@ struct HTTPRequest {
     let query: [String: String]
     let headers: [String: String] // nama header huruf kecil
     let body: Data
+    let auth: String // id request yang lolos cek kunci (AAD untuk isi terenkripsi), "" untuk halaman HTML
+}
+
+/// Hasil cek awal request, begitu header lengkap (sebelum body dibaca)
+enum Gate {
+    case allow(maxBody: Int, auth: String)
+    case reject(status: Int, json: [String: Any])
 }
 
 final class HTTPConnection {
@@ -334,15 +344,18 @@ final class HTTPConnection {
     private let maxBody: Int
     private var buffer = Data()
     private var parsed = false
-    private var headerOK = false // header lengkap & lolos cek token/batas body
+    private var headerOK = false // header lengkap & lolos cek kunci/batas body
+    private var gated: (limit: Int, auth: String)? // hasil gate (cek hanya sekali; id request hanya berlaku sekali)
     private var responded = false
     private(set) var closed = false
     let host: String // IP pengirim (tanpa port), untuk membatasi koneksi per perangkat
     var onRequest: ((HTTPRequest, HTTPConnection) -> Void)?
     var onClose: (() -> Void)?
-    /// Dipanggil begitu header lengkap, SEBELUM body dibaca: batas body, atau nil = tolak (403).
-    /// Supaya perangkat tanpa token tidak bisa memenuhi memori dengan body besar.
-    var bodyLimit: (_ method: String, _ path: String, _ query: [String: String], _ headers: [String: String]) -> Int? = { _, _, _, _ in nil }
+    /// Dipanggil begitu header lengkap, SEBELUM body dibaca: izinkan (dengan batas body) atau tolak.
+    /// Supaya perangkat tanpa kunci tidak bisa memenuhi memori dengan body besar.
+    var gate: (_ method: String, _ path: String, _ headers: [String: String]) -> Gate = { _, _, _ in
+        .reject(status: 403, json: ["error": "key"])
+    }
 
     static let reasons = [200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed",
                           411: "Length Required", 413: "Payload Too Large", 415: "Unsupported Media Type",
@@ -411,12 +424,17 @@ final class HTTPConnection {
         var query: [String: String] = [:]
         for q in comps?.queryItems ?? [] { query[q.name] = q.value ?? "" }
         let path = comps?.path ?? String(target.split(separator: "?").first ?? "/")
-        // token & batas body dicek sebelum body ditunggu / disimpan di memori
-        guard let allowed = bodyLimit(method, path, query, headers) else {
-            respond(403, type: "application/json; charset=utf-8", body: json(["error": "token"])); return true
+        // kunci & batas body dicek sebelum body ditunggu / disimpan di memori
+        if gated == nil {
+            switch gate(method, path, headers) {
+            case let .reject(status, obj):
+                respond(status, type: "application/json; charset=utf-8", body: json(obj)); return true
+            case let .allow(maxBody: allowed, auth: auth):
+                gated = (min(allowed, maxBody), auth)
+            }
         }
-        let limit = min(allowed, maxBody)
-        guard length <= limit else { respond(413, text: "Terlalu besar (maks \(byteString(limit)))"); return true }
+        guard let g = gated else { return true }
+        guard length <= g.limit else { respond(413, text: "Terlalu besar (maks \(byteString(g.limit)))"); return true }
         headerOK = true
         let bodyStart = end.upperBound
         guard buffer.endIndex - bodyStart >= length else { return false }
@@ -424,7 +442,7 @@ final class HTTPConnection {
         let body = buffer.subdata(in: bodyStart..<bodyStart + length)
         parsed = true
         buffer = Data()
-        onRequest?(HTTPRequest(method: method, path: path, query: query, headers: headers, body: body), self)
+        onRequest?(HTTPRequest(method: method, path: path, query: query, headers: headers, body: body, auth: g.auth), self)
         return true
     }
 
@@ -470,12 +488,14 @@ final class HTTPServer {
     private(set) var port: UInt16?
     private(set) var failed = false
     var handler: ((HTTPRequest, HTTPConnection) -> Void)?
-    var bodyLimit: (_ method: String, _ path: String, _ query: [String: String], _ headers: [String: String]) -> Int? = { _, _, _, _ in nil }
+    var gate: (_ method: String, _ path: String, _ headers: [String: String]) -> Gate = { _, _, _ in
+        .reject(status: 403, json: ["error": "key"])
+    }
     var onChange: (() -> Void)?
 
     let maxBody = 30 * 1024 * 1024
     let maxConnections = 64
-    let maxPerHost = 8 // satu halaman HP butuh 1 long-poll + beberapa request kirim / gambar
+    let maxPerHost = 12 // satu halaman HP butuh 1 long-poll + beberapa request kirim / gambar (browser: maks 6 paralel)
 
     var running: Bool { port != nil }
 
@@ -529,7 +549,7 @@ final class HTTPServer {
         guard conns.values.filter({ $0.host == c.host }).count < maxPerHost else { return nc.cancel() }
         let key = ObjectIdentifier(c)
         conns[key] = c
-        c.bodyLimit = { [weak self] m, p, q, h in self?.bodyLimit(m, p, q, h) }
+        c.gate = { [weak self] m, p, h in self?.gate(m, p, h) ?? .reject(status: 403, json: ["error": "key"]) }
         c.onRequest = { [weak self] req, c in self?.handler?(req, c) }
         c.onClose = { [weak self] in self?.conns[key] = nil }
         c.start()
@@ -563,8 +583,21 @@ final class Updater: NSObject {
     let repo = "kikiraihan/mac-os-PasteLAN"
     let appName = "PasteLAN"
     let menuItem = NSMenuItem(title: "Cek pembaruan…", action: #selector(Updater.checkNow), keyEquivalent: "")
-    var latest: (version: String, zip: URL?, page: URL)?
+    typealias Release = (version: String, zip: URL?, sig: URL?, page: URL)
+    var latest: Release?
     var timer: Timer?
+
+    /// Kunci publik Ed25519 (base64) pemilik repo, dari `swift scripts/sign-release.swift keygen`.
+    /// Update otomatis hanya dipasang kalau PasteLAN.zip.sig cocok dengan kunci ini; kosong → selalu lewat halaman rilis.
+    static let publicKey = ""
+
+    /// Tanda tangan untuk "PasteLAN <tag>\n" + isi zip (lihat scripts/sign-release.swift)
+    static func verify(zip: URL, tag: String, signature: String) -> Bool {
+        guard let k = Data(base64Encoded: publicKey), let key = try? Curve25519.Signing.PublicKey(rawRepresentation: k),
+              let sig = Data(base64Encoded: signature.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let data = try? Data(contentsOf: zip) else { return false }
+        return key.isValidSignature(sig, for: Data("PasteLAN \(tag)\n".utf8) + data)
+    }
 
     static var current: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0" }
 
@@ -613,16 +646,18 @@ final class Updater: NSObject {
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.timeoutInterval = 15
         URLSession.shared.dataTask(with: req) { data, _, _ in
-            var info: (String, URL?, URL)?
+            var info: Release?
             if let data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let tag = j["tag_name"] as? String,
                let page = (j["html_url"] as? String).flatMap({ URL(string: $0) }) {
                 let assets = j["assets"] as? [[String: Any]] ?? []
-                let zip = assets.first { ($0["name"] as? String) == "\(self.appName).zip" }?["browser_download_url"] as? String
-                info = (tag, zip.flatMap { URL(string: $0) }, page)
+                func asset(_ name: String) -> URL? {
+                    (assets.first { ($0["name"] as? String) == name }?["browser_download_url"] as? String).flatMap { URL(string: $0) }
+                }
+                info = (tag, asset("\(self.appName).zip"), asset("\(self.appName).zip.sig"), page)
             }
             DispatchQueue.main.async {
-                if let info { self.latest = (info.0, info.1, info.2) }
+                if let info { self.latest = info }
                 done(info != nil)
             }
         }.resume()
@@ -662,57 +697,68 @@ final class Updater: NSObject {
     }
 
     /// Unduh .zip rilis, ekstrak, lalu ganti .app lama setelah aplikasi ini keluar
-    func install(_ l: (version: String, zip: URL?, page: URL)) {
+    func install(_ l: Release) {
         let dest = Bundle.main.bundleURL
-        // tanpa file .zip, bukan .app, atau folder tidak bisa ditulis → unduh manual dari halaman rilis
-        guard let zip = l.zip, dest.pathExtension == "app",
+        // tanpa .zip / tanda tangan / kunci publik, bukan .app, atau folder tidak bisa ditulis → unduh manual dari halaman rilis
+        guard let zip = l.zip, let sigURL = l.sig, !Updater.publicKey.isEmpty, dest.pathExtension == "app",
               FileManager.default.isWritableFile(atPath: dest.deletingLastPathComponent().path) else {
             NSWorkspace.shared.open(l.page)
             return
         }
         menuItem.title = "Mengunduh \(l.version)…"
         menuItem.isEnabled = false
-        URLSession.shared.downloadTask(with: zip) { tmp, _, err in
-            let fm = FileManager.default
-            let work = fm.temporaryDirectory.appendingPathComponent("\(self.appName)-update-\(UUID().uuidString)")
-            let zipFile = work.appendingPathComponent("update.zip")
-            let newApp = work.appendingPathComponent("\(self.appName).app")
-            var problem: String?
-            if let tmp {
-                do {
-                    // file sementara dihapus setelah handler ini selesai → pindahkan sekarang
-                    try fm.createDirectory(at: work, withIntermediateDirectories: true)
-                    try fm.moveItem(at: tmp, to: zipFile)
-                    let unzip = Process()
-                    unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-                    unzip.arguments = ["-x", "-k", zipFile.path, work.path]
-                    try unzip.run()
-                    unzip.waitUntilExit()
-                    if unzip.terminationStatus != 0 || !fm.fileExists(atPath: newApp.path) {
-                        problem = "File rilis tidak berisi \(self.appName).app."
-                    }
-                } catch { problem = error.localizedDescription }
-            } else {
-                problem = err?.localizedDescription ?? "Unduhan gagal."
-            }
-            DispatchQueue.main.async {
-                if let problem { return self.fail(problem, l.page) }
-                // skrip kecil: tunggu aplikasi ini keluar, tukar .app (lama dicadangkan dulu), lalu buka lagi
-                let script = """
-                while kill -0 "$1" 2>/dev/null; do sleep 0.2; done
-                if mv "$3" "$4"; then
-                  if mv "$2" "$3"; then rm -rf "$4"; else mv "$4" "$3"; fi
-                fi
-                xattr -cr "$3" 2>/dev/null
-                open "$3"
-                """
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/bin/sh")
-                p.arguments = ["-c", script, "sh", String(getpid()), newApp.path, dest.path,
-                               work.appendingPathComponent("old.app").path]
-                do { try p.run() } catch { return self.fail(error.localizedDescription, l.page) }
-                NSApp.terminate(nil)
-            }
+        // tanda tangan dulu (kecil), lalu zip
+        URLSession.shared.dataTask(with: sigURL) { sigData, _, _ in
+            let signature = sigData.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            URLSession.shared.downloadTask(with: zip) { tmp, _, err in
+                let fm = FileManager.default
+                let work = fm.temporaryDirectory.appendingPathComponent("\(self.appName)-update-\(UUID().uuidString)")
+                let zipFile = work.appendingPathComponent("update.zip")
+                let newApp = work.appendingPathComponent("\(self.appName).app")
+                var problem: String?
+                if let tmp {
+                    do {
+                        // file sementara dihapus setelah handler ini selesai → pindahkan sekarang
+                        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+                        try fm.moveItem(at: tmp, to: zipFile)
+                        // zip harus ditandatangani pemilik repo → akun / rilis GitHub yang dibobol saja tidak cukup
+                        guard Updater.verify(zip: zipFile, tag: l.version, signature: signature) else {
+                            throw NSError(domain: "PasteLAN", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                                "Tanda tangan rilis tidak cocok. Update dibatalkan demi keamanan."])
+                        }
+                        let unzip = Process()
+                        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+                        unzip.arguments = ["-x", "-k", zipFile.path, work.path]
+                        try unzip.run()
+                        unzip.waitUntilExit()
+                        if unzip.terminationStatus != 0 || !fm.fileExists(atPath: newApp.path) {
+                            problem = "File rilis tidak berisi \(self.appName).app."
+                        } else if Bundle(url: newApp)?.bundleIdentifier != Bundle.main.bundleIdentifier {
+                            problem = "File rilis berisi aplikasi lain."
+                        }
+                    } catch { problem = error.localizedDescription }
+                } else {
+                    problem = err?.localizedDescription ?? "Unduhan gagal."
+                }
+                DispatchQueue.main.async {
+                    if let problem { return self.fail(problem, l.page) }
+                    // skrip kecil: tunggu aplikasi ini keluar, tukar .app (lama dicadangkan dulu), lalu buka lagi
+                    let script = """
+                    while kill -0 "$1" 2>/dev/null; do sleep 0.2; done
+                    if mv "$3" "$4"; then
+                      if mv "$2" "$3"; then rm -rf "$4"; else mv "$4" "$3"; fi
+                    fi
+                    xattr -cr "$3" 2>/dev/null
+                    open "$3"
+                    """
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: "/bin/sh")
+                    p.arguments = ["-c", script, "sh", String(getpid()), newApp.path, dest.path,
+                                   work.appendingPathComponent("old.app").path]
+                    do { try p.run() } catch { return self.fail(error.localizedDescription, l.page) }
+                    NSApp.terminate(nil)
+                }
+            }.resume()
         }.resume()
     }
 
@@ -739,8 +785,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let clipboard = Clipboard()
     let macName = computerName()
 
-    var token = ""
-    var waiters: [(c: HTTPConnection, after: Int)] = [] // long-poll yang sedang ditahan
+    /// Kunci 256-bit di QR code (bagian #k= link, tidak pernah dikirim lewat jaringan).
+    /// Semua isi API dienkripsi ChaCha20-Poly1305 dengan kunci ini → penyadap Wi-Fi tidak bisa membaca / memalsukan.
+    var key = SymmetricKey(size: .bits256)
+    var seen: [String: Int64] = [:] // id request (X-Auth) yang sudah dipakai → waktu (ms), anti replay
+    var waiters: [(c: HTTPConnection, after: Int, auth: String)] = [] // long-poll yang sedang ditahan
     var flashTimer: Timer?
 
     var sharing: Bool { d.bool(forKey: "sharing") }
@@ -749,7 +798,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Link yang di-scan HP (nil kalau Mac tidak terhubung ke jaringan lokal / server belum jalan)
     var shareURL: String? {
         guard let port = server.port, let ip = localIPv4() else { return nil }
-        return "http://\(ip):\(port)/?t=\(token)"
+        return "http://\(ip):\(port)/#k=\(b64url(key.withUnsafeBytes { Data($0) }))"
     }
 
     /// Perkiraan jumlah HP yang sedang membuka halaman (tiap halaman menahan satu long-poll)
@@ -757,7 +806,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         d.register(defaults: ["sharing": true, "autoSend": true, "saveImages": false, "port": 8787])
-        if let t = d.string(forKey: "token"), t.count == 32 { token = t } else { resetToken() }
+        d.removeObject(forKey: "token") // link lama (v0.1.x, token di ?t=) tidak berlaku lagi
+        if let k = d.string(forKey: "key").flatMap(fromB64url), k.count == 32 { key = SymmetricKey(data: k) } else { resetKey() }
 
         item.autosaveName = "PasteLAN" // posisi ikon diingat
         item.button?.toolTip = "PasteLAN — copy-paste Mac ⇄ HP lewat Wi-Fi"
@@ -766,7 +816,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = menu
 
         server.handler = { [weak self] r, c in self?.handle(r, c) }
-        server.bodyLimit = { [weak self] m, p, q, h in self?.bodyLimit(m, p, q, h) }
+        server.gate = { [weak self] m, p, h in self?.gate(m, p, h) ?? .reject(status: 403, json: ["error": "key"]) }
         server.onChange = { [weak self] in self?.updateIcon() }
         store.onAdd = { [weak self] _ in self?.wakeWaiters() }
         clipboard.onChange = { [weak self] in self?.sendClipboard() }
@@ -822,12 +872,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func wakeWaiters() {
         let list = waiters
         waiters.removeAll()
-        for w in list { answerItems(w.c, after: w.after) }
+        for w in list { answerItems(w.c, after: w.after, auth: w.auth) }
     }
 
-    func resetToken() {
-        token = randomHex()
-        d.set(token, forKey: "token")
+    func resetKey() {
+        key = SymmetricKey(size: .bits256)
+        d.set(b64url(key.withUnsafeBytes { Data($0) }), forKey: "key")
+        seen.removeAll()
     }
 
     /// Pertama kali dipakai: pengguna memilih sendiri apakah setiap copy di Mac langsung tersedia untuk HP
@@ -845,28 +896,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: HTTP
 
-    /// Dicek begitu header request lengkap (sebelum body dibaca): batas body, atau nil = token salah (403)
-    func bodyLimit(_ method: String, _ path: String, _ query: [String: String], _ headers: [String: String]) -> Int? {
-        guard path.hasPrefix("/api/") else { return 0 } // halaman HTML: token dicek di handle(), tanpa body
-        guard sameToken(headers["x-token"] ?? query["t"], token) else { return nil }
+    /// Dicek begitu header request lengkap (sebelum body dibaca).
+    /// Header X-Auth = "<waktu ms>.<base64url(nonce 12 B + tag 16 B)>": ChaChaPoly tanpa isi dengan
+    /// AAD "PL1|req|<method>|<path>|<waktu>". Hanya pemegang kunci yang bisa membuatnya, dan tiap header
+    /// hanya berlaku sekali (anti replay). Header ini juga menjadi id request untuk AAD isi & jawaban.
+    func gate(_ method: String, _ path: String, _ headers: [String: String]) -> Gate {
+        guard path.hasPrefix("/api/") else { return .allow(maxBody: 0, auth: "") } // halaman HTML: tanpa rahasia, tanpa body
+        let deny = Gate.reject(status: 403, json: ["error": "key"])
+        guard let h = headers["x-auth"], let dot = h.firstIndex(of: "."),
+              let ts = Int64(h[..<dot]), ts > 0, ts < 1 << 50 else { return deny }
+        let auth = String(h[h.index(after: dot)...])
+        guard let raw = fromB64url(auth), raw.count == 28,
+              let nonce = try? ChaChaPoly.Nonce(data: raw.prefix(12)),
+              let box = try? ChaChaPoly.SealedBox(nonce: nonce, ciphertext: Data(), tag: raw.suffix(16)),
+              (try? ChaChaPoly.open(box, using: key, authenticating: Data("PL1|req|\(method)|\(path)|\(ts)".utf8))) != nil
+        else { return deny }
+        // jam HP beda jauh → beri tahu waktu Mac (aman: hanya untuk pemegang kunci), halaman menyesuaikan lalu mengulang
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        guard abs(now - ts) <= 300_000 else { return .reject(status: 409, json: ["error": "time", "now": now]) }
+        seen = seen.filter { now - $0.value <= 600_000 }
+        guard seen[auth] == nil else { return deny }
+        seen[auth] = now
         switch (method, path) {
-        case ("POST", "/api/text"): return clipboard.maxText
-        case ("POST", "/api/image"): return clipboard.maxImage
-        default: return 0
+        case ("POST", "/api/text"): return .allow(maxBody: clipboard.maxText + 64, auth: auth) // + nonce & tag
+        case ("POST", "/api/image"): return .allow(maxBody: clipboard.maxImage + 256, auth: auth) // + MIME, nonce & tag
+        default: return .allow(maxBody: 0, auth: auth)
         }
     }
 
+    /// Isi request dari HP: kotak ChaChaPoly (nonce + ciphertext + tag) dengan AAD "PL1|body|<id request>"
+    func openBody(_ r: HTTPRequest) -> Data? {
+        guard let box = try? ChaChaPoly.SealedBox(combined: r.body) else { return nil }
+        return try? ChaChaPoly.open(box, using: key, authenticating: Data("PL1|body|\(r.auth)".utf8))
+    }
+
+    /// Jawaban 200 selalu terenkripsi, terikat ke request-nya (AAD "PL1|resp|<id request>")
+    func respondSealed(_ c: HTTPConnection, _ plain: Data, auth: String) {
+        guard let box = try? ChaChaPoly.seal(plain, using: key, authenticating: Data("PL1|resp|\(auth)".utf8)) else {
+            return c.respond(500, text: "Gagal mengenkripsi")
+        }
+        c.respond(200, type: "application/octet-stream", body: box.combined)
+    }
+
     func handle(_ r: HTTPRequest, _ c: HTTPConnection) {
+        // halaman tidak berisi rahasia (kunci ada di #k=, dibaca JS di HP); semua /api/ sudah lolos gate()
         if r.path == "/" || r.path == "/index.html" {
-            guard sameToken(r.query["t"], token) else {
-                return c.respond(403, type: "text/html; charset=utf-8", body: Data(Page.expired.utf8))
-            }
             return c.respond(200, type: "text/html; charset=utf-8", body: Data(Page.html.utf8))
         }
-        guard r.path.hasPrefix("/api/") else { return c.respond(404, text: "Tidak ditemukan") }
-        guard sameToken(r.headers["x-token"] ?? r.query["t"], token) else {
-            return c.respondJSON(["error": "token"], status: 403)
-        }
+        guard r.path.hasPrefix("/api/"), !r.auth.isEmpty else { return c.respond(404, text: "Tidak ditemukan") }
 
         switch (r.method, r.path) {
         case ("GET", "/api/items"):
@@ -874,54 +951,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let fresh = r.query["s"] != store.session
             let after = fresh ? 0 : Int(r.query["after"] ?? "") ?? 0
             if !fresh, r.query["wait"] == "1", store.after(after).isEmpty {
-                waiters.append((c, after))
+                waiters.append((c, after, r.auth))
                 // tidak ada item baru dalam 25 detik → jawab kosong, halaman langsung bertanya lagi
                 DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self, weak c] in
                     guard let self, let c, let i = self.waiters.firstIndex(where: { $0.c === c }) else { return }
                     self.waiters.remove(at: i)
-                    self.answerItems(c, after: after)
+                    self.answerItems(c, after: after, auth: r.auth)
                 }
                 return
             }
-            answerItems(c, after: after)
+            answerItems(c, after: after, auth: r.auth)
 
         case ("POST", "/api/text"):
-            guard let text = String(data: r.body, encoding: .utf8), !text.isEmpty else {
+            guard let plain = openBody(r) else { return c.respondJSON(["error": "Gagal membuka isi terenkripsi"], status: 400) }
+            guard let text = String(data: plain, encoding: .utf8), !text.isEmpty else {
                 return c.respondJSON(["error": "Teks kosong"], status: 400)
             }
             clipboard.writeText(text)
             let clip = store.add(kind: "text", from: "phone", text: text)
             flash()
-            c.respondJSON(["ok": true, "id": clip.id])
+            respondSealed(c, json(["ok": true, "id": clip.id]), auth: r.auth)
 
         case ("POST", "/api/image"):
-            var mime = (r.headers["content-type"] ?? "").split(separator: ";").first.map(String.init) ?? ""
+            // isi terenkripsi = "<mime>\n" + byte gambar (MIME ikut dienkripsi)
+            guard let plain = openBody(r) else { return c.respondJSON(["error": "Gagal membuka isi terenkripsi"], status: 400) }
+            guard let nl = plain.prefix(128).firstIndex(of: 0x0A) else { return c.respondJSON(["error": "Format tidak dikenal"], status: 400) }
+            var mime = String(decoding: plain[plain.startIndex..<nl], as: UTF8.self).lowercased()
             if mime == "image/jpg" { mime = "image/jpeg" }
-            guard !r.body.isEmpty, clipboard.writeImage(r.body, mime: mime) else {
+            let data = Data(plain[(nl + 1)...])
+            guard !data.isEmpty, clipboard.writeImage(data, mime: mime) else {
                 return c.respondJSON(["error": "Bukan gambar yang didukung"], status: 415)
             }
-            // MIME dari HP disajikan ulang sebagai Content-Type → hanya format gambar biasa (bukan image/svg+xml dll.)
-            let clip = store.add(kind: "image", from: "phone", data: r.body, mime: Clipboard.imageMimes.contains(mime) ? mime : "image/png")
-            if d.bool(forKey: "saveImages") { saveToDownloads(r.body, mime: clip.mime) }
+            // MIME dari HP ikut dikirim balik di daftar item → hanya format gambar biasa (bukan image/svg+xml dll.)
+            let clip = store.add(kind: "image", from: "phone", data: data, mime: Clipboard.imageMimes.contains(mime) ? mime : "image/png")
+            if d.bool(forKey: "saveImages") { saveToDownloads(data, mime: clip.mime) }
             flash()
-            c.respondJSON(["ok": true, "id": clip.id])
+            respondSealed(c, json(["ok": true, "id": clip.id]), auth: r.auth)
 
         case ("GET", let p) where p.hasPrefix("/api/image/"):
             guard let id = Int(p.dropFirst("/api/image/".count)), let clip = store.clip(id), let data = clip.data else {
                 return c.respond(404, text: "Gambar tidak ada lagi di riwayat")
             }
-            // URL berisi session (?s=) → id yang sama setelah Mac restart tetap beda URL, aman di-cache
-            c.respond(200, type: clip.mime ?? "image/png", body: data,
-                      headers: ["Cache-Control": "private, max-age=86400",
-                                "Content-Disposition": "inline; filename=\"pastelan-\(id).\(fileExt(clip.mime))\""])
+            // terenkripsi → halaman membukanya lalu menampilkan sebagai blob: (jenis gambar dari daftar item)
+            respondSealed(c, data, auth: r.auth)
 
         default:
             c.respond(404, text: "Tidak ditemukan")
         }
     }
 
-    func answerItems(_ c: HTTPConnection, after: Int) {
-        c.respondJSON(["session": store.session, "name": macName, "items": store.after(after).map { $0.info }])
+    func answerItems(_ c: HTTPConnection, after: Int, auth: String) {
+        respondSealed(c, json(["session": store.session, "name": macName, "items": store.after(after).map { $0.info }]), auth: auth)
     }
 
     func saveToDownloads(_ data: Data, mime: String?) {
@@ -996,7 +1076,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add("Simpan juga gambar dari HP ke Unduhan", #selector(toggleSaveImages), on: d.bool(forKey: "saveImages"))
 
         menu.addItem(.separator())
-        add("Ganti link (putuskan semua HP)…", #selector(regenerateToken))
+        add("Ganti link (putuskan semua HP)…", #selector(regenerateKey))
         add("Buka saat login", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled)
         add("Cara pakai…", #selector(showHelp))
         menu.addItem(updater.menuItem)
@@ -1028,7 +1108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         v.addSubview(label)
 
         if let url {
-            let addr = NSTextField(labelWithString: url.components(separatedBy: "/?").first ?? url)
+            let addr = NSTextField(labelWithString: url.components(separatedBy: "/#").first ?? url)
             addr.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
             addr.alignment = .center
             addr.frame = NSRect(x: 14, y: 36, width: w - 28, height: 18)
@@ -1071,7 +1151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc func copyLink() {
         guard let url = shareURL else { return }
-        // link berisi token → jangan ikut Universal Clipboard (perangkat Apple lain) & tandai rahasia untuk clipboard manager
+        // link berisi kunci → jangan ikut Universal Clipboard (perangkat Apple lain) & tandai rahasia untuk clipboard manager
         let pb = clipboard.pb
         _ = pb.prepareForNewContents(with: .currentHostOnly)
         pb.setString(url, forType: .string)
@@ -1088,7 +1168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // HP yang sedang menunggu langsung diberi session baru → daftarnya dikosongkan
         wakeWaiters()
     }
-    @objc func regenerateToken() {
+    @objc func regenerateKey() {
         let a = NSAlert()
         a.messageText = "Ganti link PasteLAN?"
         a.informativeText = "Semua HP yang terhubung akan terputus dan harus scan QR code yang baru."
@@ -1096,10 +1176,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.addButton(withTitle: "Batal")
         NSApp.activate(ignoringOtherApps: true)
         guard a.runModal() == .alertFirstButtonReturn else { return }
-        resetToken()
+        resetKey()
         let list = waiters
         waiters.removeAll()
-        for w in list { w.c.respondJSON(["error": "token"], status: 403) }
+        for w in list { w.c.respondJSON(["error": "key"], status: 403) }
     }
     @objc func toggleLogin() {
         do {
@@ -1130,8 +1210,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Wi-Fi kantor / kampus / publik sering memblokir antar-perangkat. Kalau HP tidak bisa membuka \
         halaman, pakai Wi-Fi rumah atau hotspot HP.
 
-        Privasi: riwayat hanya disimpan di memori (hilang saat PasteLAN ditutup). Isi dari \
-        password manager tidak pernah dikirim. "Ganti link" memutus semua HP yang pernah terhubung.
+        Privasi: semua isi dienkripsi antara Mac dan HP (kuncinya ada di QR code). Riwayat hanya disimpan di \
+        memori (hilang saat PasteLAN ditutup). Isi dari password manager tidak pernah dikirim. \
+        "Ganti link" memutus semua HP yang pernah terhubung.
         """
         NSApp.activate(ignoringOtherApps: true)
         a.runModal()
@@ -1170,14 +1251,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 // MARK: - Halaman web untuk HP (ditanam di aplikasi, tanpa file / CDN eksternal)
 
 enum Page {
-    static let expired = #"""
-    <!doctype html><html lang="id"><head><meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1"><title>PasteLAN</title>
-    <style>body{font:16px/1.5 -apple-system,system-ui,sans-serif;margin:0;padding:48px 24px;text-align:center;color:#1d1d1f;background:#f5f5f7}
-    @media (prefers-color-scheme:dark){body{color:#f5f5f7;background:#000}}</style></head>
-    <body><h2>Link tidak berlaku</h2><p>Klik ikon ⇄ PasteLAN di menu bar Mac, lalu scan ulang QR code-nya.</p></body></html>
-    """#
-
     static let html = #"""
     <!doctype html>
     <html lang="id">
@@ -1237,10 +1310,171 @@ enum Page {
     <div id="toast"></div>
     <script>
     (() => {
-      const token = new URLSearchParams(location.search).get('t') || '';
+      // ---------- ChaCha20-Poly1305 (RFC 8439), sama dengan CryptoKit.ChaChaPoly ----------
+      // HTTP lokal bukan "secure context" → crypto.subtle tidak ada, jadi ditulis sendiri.
+      // Format kotak tersegel = nonce (12 B) + ciphertext + tag (16 B), sama dengan SealedBox.combined.
+      const AEAD = (() => {
+        // satu blok keystream (64 B) → out (Uint32Array 16); variabel lokal supaya cepat di JIT
+        function block(k, counter, n, out) {
+          const j0 = 0x61707865, j1 = 0x3320646e, j2 = 0x79622d32, j3 = 0x6b206574;
+          let x0 = j0, x1 = j1, x2 = j2, x3 = j3, x4 = k[0], x5 = k[1], x6 = k[2], x7 = k[3];
+          let x8 = k[4], x9 = k[5], x10 = k[6], x11 = k[7], x12 = counter, x13 = n[0], x14 = n[1], x15 = n[2], t;
+          for (let i = 0; i < 10; i++) {
+            x0 = x0 + x4 | 0; t = x12 ^ x0; x12 = t << 16 | t >>> 16; x8 = x8 + x12 | 0; t = x4 ^ x8; x4 = t << 12 | t >>> 20;
+            x0 = x0 + x4 | 0; t = x12 ^ x0; x12 = t << 8 | t >>> 24; x8 = x8 + x12 | 0; t = x4 ^ x8; x4 = t << 7 | t >>> 25;
+            x1 = x1 + x5 | 0; t = x13 ^ x1; x13 = t << 16 | t >>> 16; x9 = x9 + x13 | 0; t = x5 ^ x9; x5 = t << 12 | t >>> 20;
+            x1 = x1 + x5 | 0; t = x13 ^ x1; x13 = t << 8 | t >>> 24; x9 = x9 + x13 | 0; t = x5 ^ x9; x5 = t << 7 | t >>> 25;
+            x2 = x2 + x6 | 0; t = x14 ^ x2; x14 = t << 16 | t >>> 16; x10 = x10 + x14 | 0; t = x6 ^ x10; x6 = t << 12 | t >>> 20;
+            x2 = x2 + x6 | 0; t = x14 ^ x2; x14 = t << 8 | t >>> 24; x10 = x10 + x14 | 0; t = x6 ^ x10; x6 = t << 7 | t >>> 25;
+            x3 = x3 + x7 | 0; t = x15 ^ x3; x15 = t << 16 | t >>> 16; x11 = x11 + x15 | 0; t = x7 ^ x11; x7 = t << 12 | t >>> 20;
+            x3 = x3 + x7 | 0; t = x15 ^ x3; x15 = t << 8 | t >>> 24; x11 = x11 + x15 | 0; t = x7 ^ x11; x7 = t << 7 | t >>> 25;
+            x0 = x0 + x5 | 0; t = x15 ^ x0; x15 = t << 16 | t >>> 16; x10 = x10 + x15 | 0; t = x5 ^ x10; x5 = t << 12 | t >>> 20;
+            x0 = x0 + x5 | 0; t = x15 ^ x0; x15 = t << 8 | t >>> 24; x10 = x10 + x15 | 0; t = x5 ^ x10; x5 = t << 7 | t >>> 25;
+            x1 = x1 + x6 | 0; t = x12 ^ x1; x12 = t << 16 | t >>> 16; x11 = x11 + x12 | 0; t = x6 ^ x11; x6 = t << 12 | t >>> 20;
+            x1 = x1 + x6 | 0; t = x12 ^ x1; x12 = t << 8 | t >>> 24; x11 = x11 + x12 | 0; t = x6 ^ x11; x6 = t << 7 | t >>> 25;
+            x2 = x2 + x7 | 0; t = x13 ^ x2; x13 = t << 16 | t >>> 16; x8 = x8 + x13 | 0; t = x7 ^ x8; x7 = t << 12 | t >>> 20;
+            x2 = x2 + x7 | 0; t = x13 ^ x2; x13 = t << 8 | t >>> 24; x8 = x8 + x13 | 0; t = x7 ^ x8; x7 = t << 7 | t >>> 25;
+            x3 = x3 + x4 | 0; t = x14 ^ x3; x14 = t << 16 | t >>> 16; x9 = x9 + x14 | 0; t = x4 ^ x9; x4 = t << 12 | t >>> 20;
+            x3 = x3 + x4 | 0; t = x14 ^ x3; x14 = t << 8 | t >>> 24; x9 = x9 + x14 | 0; t = x4 ^ x9; x4 = t << 7 | t >>> 25;
+          }
+          out[0] = x0 + j0; out[1] = x1 + j1; out[2] = x2 + j2; out[3] = x3 + j3;
+          out[4] = x4 + k[0]; out[5] = x5 + k[1]; out[6] = x6 + k[2]; out[7] = x7 + k[3];
+          out[8] = x8 + k[4]; out[9] = x9 + k[5]; out[10] = x10 + k[6]; out[11] = x11 + k[7];
+          out[12] = x12 + counter; out[13] = x13 + n[0]; out[14] = x14 + n[1]; out[15] = x15 + n[2];
+        }
+        const words = (b, n) => { const w = new Uint32Array(n); for (let i = 0; i < n; i++) w[i] = b[4 * i] | b[4 * i + 1] << 8 | b[4 * i + 2] << 16 | b[4 * i + 3] << 24; return w; };
+        // XOR dengan keystream mulai dari blok `counter`
+        function chacha(key, nonce, counter, input) {
+          const k = words(key, 8), n = words(nonce, 3), out = new Uint8Array(input.length);
+          const ks = new Uint32Array(16), ks8 = new Uint8Array(ks.buffer); // little-endian di semua HP
+          for (let off = 0; off < input.length; off += 64, counter++) {
+            block(k, counter, n, ks);
+            const end = Math.min(64, input.length - off);
+            for (let i = 0; i < end; i++) out[off + i] = input[off + i] ^ ks8[i];
+          }
+          return out;
+        }
+        // Poly1305 dengan 10 limb 13-bit (Float64Array: semua hasil kali & jumlah < 2^53 → eksak)
+        function limbs(b, o, hibit, h) {
+          const t0 = b[o] | b[o + 1] << 8, t1 = b[o + 2] | b[o + 3] << 8, t2 = b[o + 4] | b[o + 5] << 8, t3 = b[o + 6] | b[o + 7] << 8;
+          const t4 = b[o + 8] | b[o + 9] << 8, t5 = b[o + 10] | b[o + 11] << 8, t6 = b[o + 12] | b[o + 13] << 8, t7 = b[o + 14] | b[o + 15] << 8;
+          h[0] += t0 & 0x1fff;
+          h[1] += ((t0 >>> 13) | (t1 << 3)) & 0x1fff;
+          h[2] += ((t1 >>> 10) | (t2 << 6)) & 0x1fff;
+          h[3] += ((t2 >>> 7) | (t3 << 9)) & 0x1fff;
+          h[4] += ((t3 >>> 4) | (t4 << 12)) & 0x1fff;
+          h[5] += (t4 >>> 1) & 0x1fff;
+          h[6] += ((t4 >>> 14) | (t5 << 2)) & 0x1fff;
+          h[7] += ((t5 >>> 11) | (t6 << 5)) & 0x1fff;
+          h[8] += ((t6 >>> 8) | (t7 << 8)) & 0x1fff;
+          h[9] += (t7 >>> 5) | hibit;
+        }
+        // setelah ini semua limb < 2^13 (nilai < 2^130)
+        function carry(h) {
+          let c;
+          do {
+            c = 0;
+            for (let i = 0; i < 10; i++) { const v = h[i] + c; c = Math.floor(v / 8192); h[i] = v - c * 8192; }
+            h[0] += c * 5; // 2^130 ≡ 5 (mod p)
+          } while (c);
+        }
+        // msg: panjangnya selalu kelipatan 16 (AEAD sudah di-pad)
+        function poly1305(key, msg) {
+          const rb = key.slice(0, 16);
+          rb[3] &= 15; rb[7] &= 15; rb[11] &= 15; rb[15] &= 15; rb[4] &= 252; rb[8] &= 252; rb[12] &= 252;
+          const r = new Float64Array(10); limbs(rb, 0, 0, r);
+          const r0 = r[0], r1 = r[1], r2 = r[2], r3 = r[3], r4 = r[4], r5 = r[5], r6 = r[6], r7 = r[7], r8 = r[8], r9 = r[9];
+          const s1 = 5 * r1, s2 = 5 * r2, s3 = 5 * r3, s4 = 5 * r4, s5 = 5 * r5, s6 = 5 * r6, s7 = 5 * r7, s8 = 5 * r8, s9 = 5 * r9; // 2^130 ≡ 5 (mod p)
+          const h = new Float64Array(10);
+          let h0 = 0, h1 = 0, h2 = 0, h3 = 0, h4 = 0, h5 = 0, h6 = 0, h7 = 0, h8 = 0, h9 = 0, c;
+          for (let o = 0; o < msg.length; o += 16) {
+            const t0 = msg[o] | msg[o + 1] << 8, t1 = msg[o + 2] | msg[o + 3] << 8, t2 = msg[o + 4] | msg[o + 5] << 8, t3 = msg[o + 6] | msg[o + 7] << 8;
+            const t4 = msg[o + 8] | msg[o + 9] << 8, t5 = msg[o + 10] | msg[o + 11] << 8, t6 = msg[o + 12] | msg[o + 13] << 8, t7 = msg[o + 14] | msg[o + 15] << 8;
+            h0 += t0 & 0x1fff; h1 += ((t0 >>> 13) | (t1 << 3)) & 0x1fff; h2 += ((t1 >>> 10) | (t2 << 6)) & 0x1fff;
+            h3 += ((t2 >>> 7) | (t3 << 9)) & 0x1fff; h4 += ((t3 >>> 4) | (t4 << 12)) & 0x1fff; h5 += (t4 >>> 1) & 0x1fff;
+            h6 += ((t4 >>> 14) | (t5 << 2)) & 0x1fff; h7 += ((t5 >>> 11) | (t6 << 5)) & 0x1fff; h8 += ((t6 >>> 8) | (t7 << 8)) & 0x1fff;
+            h9 += (t7 >>> 5) | 1 << 11; // + 2^128
+            let d0 = h0 * r0 + h1 * s9 + h2 * s8 + h3 * s7 + h4 * s6 + h5 * s5 + h6 * s4 + h7 * s3 + h8 * s2 + h9 * s1;
+            let d1 = h0 * r1 + h1 * r0 + h2 * s9 + h3 * s8 + h4 * s7 + h5 * s6 + h6 * s5 + h7 * s4 + h8 * s3 + h9 * s2;
+            let d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * s9 + h4 * s8 + h5 * s7 + h6 * s6 + h7 * s5 + h8 * s4 + h9 * s3;
+            let d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * s9 + h5 * s8 + h6 * s7 + h7 * s6 + h8 * s5 + h9 * s4;
+            let d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0 + h5 * s9 + h6 * s8 + h7 * s7 + h8 * s6 + h9 * s5;
+            let d5 = h0 * r5 + h1 * r4 + h2 * r3 + h3 * r2 + h4 * r1 + h5 * r0 + h6 * s9 + h7 * s8 + h8 * s7 + h9 * s6;
+            let d6 = h0 * r6 + h1 * r5 + h2 * r4 + h3 * r3 + h4 * r2 + h5 * r1 + h6 * r0 + h7 * s9 + h8 * s8 + h9 * s7;
+            let d7 = h0 * r7 + h1 * r6 + h2 * r5 + h3 * r4 + h4 * r3 + h5 * r2 + h6 * r1 + h7 * r0 + h8 * s9 + h9 * s8;
+            let d8 = h0 * r8 + h1 * r7 + h2 * r6 + h3 * r5 + h4 * r4 + h5 * r3 + h6 * r2 + h7 * r1 + h8 * r0 + h9 * s9;
+            let d9 = h0 * r9 + h1 * r8 + h2 * r7 + h3 * r6 + h4 * r5 + h5 * r4 + h6 * r3 + h7 * r2 + h8 * r1 + h9 * r0;
+            // carry ringan: cukup supaya limb tetap kecil untuk perkalian berikutnya
+            c = Math.floor(d0 / 8192); h0 = d0 - c * 8192;
+            d1 += c; c = Math.floor(d1 / 8192); h1 = d1 - c * 8192;
+            d2 += c; c = Math.floor(d2 / 8192); h2 = d2 - c * 8192;
+            d3 += c; c = Math.floor(d3 / 8192); h3 = d3 - c * 8192;
+            d4 += c; c = Math.floor(d4 / 8192); h4 = d4 - c * 8192;
+            d5 += c; c = Math.floor(d5 / 8192); h5 = d5 - c * 8192;
+            d6 += c; c = Math.floor(d6 / 8192); h6 = d6 - c * 8192;
+            d7 += c; c = Math.floor(d7 / 8192); h7 = d7 - c * 8192;
+            d8 += c; c = Math.floor(d8 / 8192); h8 = d8 - c * 8192;
+            d9 += c; c = Math.floor(d9 / 8192); h9 = d9 - c * 8192;
+            h0 += c * 5;
+          }
+          h[0] = h0; h[1] = h1; h[2] = h2; h[3] = h3; h[4] = h4; h[5] = h5; h[6] = h6; h[7] = h7; h[8] = h8; h[9] = h9;
+          carry(h);
+          // h ≥ p (= 2^130 - 5)? → kurangi p
+          const g = Float64Array.from(h); g[0] += 5;
+          c = 0;
+          for (let i = 0; i < 10; i++) { const v = g[i] + c; c = Math.floor(v / 8192); g[i] = v - c * 8192; }
+          const f = c > 0 ? g : h; // h + 5 ≥ 2^130
+          const w = [
+            (f[0] | f[1] << 13), (f[1] >>> 3 | f[2] << 10), (f[2] >>> 6 | f[3] << 7), (f[3] >>> 9 | f[4] << 4),
+            (f[4] >>> 12 | f[5] << 1 | f[6] << 14), (f[6] >>> 2 | f[7] << 11), (f[7] >>> 5 | f[8] << 8), (f[8] >>> 8 | f[9] << 5)
+          ];
+          const tag = new Uint8Array(16);
+          c = 0;
+          for (let i = 0; i < 8; i++) {
+            const v = (w[i] & 0xffff) + (key[16 + 2 * i] | key[17 + 2 * i] << 8) + c;
+            tag[2 * i] = v & 255; tag[2 * i + 1] = (v >>> 8) & 255; c = v >>> 16;
+          }
+          return tag;
+        }
+        function mac(key, nonce, aad, ct) {
+          const pk = chacha(key, nonce, 0, new Uint8Array(32));
+          const pad = n => (16 - n % 16) % 16;
+          const m = new Uint8Array(aad.length + pad(aad.length) + ct.length + pad(ct.length) + 16);
+          m.set(aad, 0); m.set(ct, aad.length + pad(aad.length));
+          const dv = new DataView(m.buffer, m.length - 16);
+          dv.setUint32(0, aad.length, true); dv.setUint32(8, ct.length, true); // < 4 GB
+          return poly1305(pk, m);
+        }
+        const enc = s => new TextEncoder().encode(s);
+        return {
+          seal(key, plain, aad) {
+            const nonce = crypto.getRandomValues(new Uint8Array(12));
+            const ct = chacha(key, nonce, 1, plain);
+            const out = new Uint8Array(12 + ct.length + 16);
+            out.set(nonce); out.set(ct, 12); out.set(mac(key, nonce, enc(aad), ct), 12 + ct.length);
+            return out;
+          },
+          // null kalau tag tidak cocok (kunci salah / data diubah)
+          open(key, box, aad) {
+            if (box.length < 28) return null;
+            const nonce = box.subarray(0, 12), ct = box.subarray(12, box.length - 16), tag = box.subarray(box.length - 16);
+            const t = mac(key, nonce, enc(aad), ct);
+            let diff = 0;
+            for (let i = 0; i < 16; i++) diff |= t[i] ^ tag[i];
+            return diff ? null : chacha(key, nonce, 1, ct);
+          }
+        };
+      })();
+
+      // kunci dari #k= (fragment tidak pernah dikirim lewat jaringan); disimpan juga untuk ikon Layar Utama
+      const b64d = s => { try { return Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)); } catch (e) { return null; } };
+      const b64e = a => btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      let keyText = new URLSearchParams(location.hash.slice(1)).get('k') || '';
+      try { if (keyText) localStorage.setItem('pastelan-key', keyText); else keyText = localStorage.getItem('pastelan-key') || ''; } catch (e) {}
+      const key = b64d(keyText);
       const $ = id => document.getElementById(id);
       const MAX_ITEMS = 20, MAX_BYTES = 30 * 1024 * 1024;
-      let after = 0, session = '', stopped = false, ctrl = null;
+      let after = 0, session = '', stopped = false, ctrl = null, clockOffset = 0; // clockOffset = jam Mac − jam HP (ms)
 
       function toast(msg) {
         const t = $('toast');
@@ -1261,13 +1495,28 @@ enum Page {
         $('list').innerHTML = '<div class="card empty">Link ini sudah tidak berlaku. Klik ikon ⇄ PasteLAN di menu bar Mac, lalu scan ulang QR code-nya.</div>';
       }
 
-      async function api(path, opts = {}) {
-        opts.headers = Object.assign({ 'X-Token': token }, opts.headers || {});
+      // Semua request terenkripsi: X-Auth membuktikan pemegang kunci (sekali pakai), body & jawaban 200 berupa
+      // kotak ChaCha20-Poly1305 yang terikat ke X-Auth itu. Penyadap Wi-Fi hanya melihat ukuran & waktu.
+      async function api(path, { method = 'GET', body = null, signal, raw = false } = {}, retry = true) {
+        const ts = Date.now() + clockOffset;
+        const auth = b64e(AEAD.seal(key, new Uint8Array(0), `PL1|req|${method}|${path.split('?')[0]}|${ts}`));
+        const opts = { method, signal, headers: { 'X-Auth': ts + '.' + auth } };
+        if (body) { opts.body = AEAD.seal(key, body, 'PL1|body|' + auth); opts.headers['Content-Type'] = 'application/octet-stream'; }
         const r = await fetch(path, opts);
         if (r.status === 403) { expired(); throw new Error('403'); }
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-        return j;
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          // jam HP beda jauh dengan Mac → sesuaikan, ulangi sekali
+          if (r.status === 409 && j.now && retry) { clockOffset = j.now - Date.now(); return api(path, { method, body, signal, raw }, false); }
+          throw new Error(j.error || ('HTTP ' + r.status));
+        }
+        const plain = AEAD.open(key, new Uint8Array(await r.arrayBuffer()), 'PL1|resp|' + auth);
+        if (!plain) throw new Error('jawaban rusak');
+        return raw ? plain : JSON.parse(new TextDecoder().decode(plain));
+      }
+      function clearList() {
+        for (const c of $('list').children) if (c.blobURL) URL.revokeObjectURL(c.blobURL);
+        $('list').textContent = '';
       }
 
       // ---------- menerima dari Mac (long-poll) ----------
@@ -1277,7 +1526,7 @@ enum Page {
           const timer = setTimeout(() => ctrl.abort(), 35000);
           try {
             const j = await api(`/api/items?after=${after}&s=${encodeURIComponent(session)}&wait=1`, { signal: ctrl.signal });
-            if (j.session !== session) { session = j.session; after = 0; $('list').textContent = ''; }
+            if (j.session !== session) { session = j.session; after = 0; clearList(); }
             setStatus('on', 'Terhubung ke ' + j.name);
             for (const it of j.items) { add(it); after = Math.max(after, it.id); }
             showEmpty();
@@ -1323,13 +1572,14 @@ enum Page {
             }));
           }
         } else {
-          const src = `/api/image/${it.id}?s=${encodeURIComponent(session)}&t=${encodeURIComponent(token)}`;
           const img = el('img');
-          img.src = src;
           img.alt = 'Gambar';
           card.append(img);
           const a = el('a', 'btn grow', 'Simpan / buka');
-          a.href = src;
+          // gambar terenkripsi → dibuka di HP lalu ditampilkan sebagai blob:
+          api(`/api/image/${it.id}?s=${encodeURIComponent(session)}`, { raw: true }).then(bytes => {
+            card.blobURL = img.src = a.href = URL.createObjectURL(new Blob([bytes], { type: it.mime || 'image/png' }));
+          }).catch(() => { img.alt = 'Gambar gagal dimuat'; });
           a.download = `pastelan-${it.id}.${(it.mime || 'image/png').split('/')[1].replace('jpeg', 'jpg')}`;
           a.target = '_blank';
           row.append(a);
@@ -1337,7 +1587,10 @@ enum Page {
         card.append(row);
         if (it.kind !== 'text') card.append(el('div', 'hint', 'Tekan lama gambar untuk menyalin atau menyimpan.'));
         list.prepend(card);
-        while (list.children.length > MAX_ITEMS) list.lastChild.remove();
+        while (list.children.length > MAX_ITEMS) {
+          if (list.lastChild.blobURL) URL.revokeObjectURL(list.lastChild.blobURL);
+          list.lastChild.remove();
+        }
       }
 
       // HTTP lokal bukan "secure context" → navigator.clipboard sering tidak ada, pakai cara lama
@@ -1371,7 +1624,7 @@ enum Page {
         if (!text.trim()) { toast('Tulis atau tempel teks dulu'); $('input').focus(); return; }
         $('send').disabled = true;
         try {
-          await api('/api/text', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: text });
+          await api('/api/text', { method: 'POST', body: new TextEncoder().encode(text) });
           $('input').value = '';
           toast('Terkirim ke clipboard Mac ✓');
         } catch (e) { if (!stopped) toast('Gagal mengirim: ' + e.message); }
@@ -1381,7 +1634,12 @@ enum Page {
         if (file.size > MAX_BYTES) return toast('Gambar terlalu besar (maks 30 MB)');
         toast('Mengirim gambar…');
         try {
-          await api('/api/image', { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file });
+          // isi = "<mime>\n" + byte gambar, lalu dienkripsi utuh
+          const head = new TextEncoder().encode((file.type || 'application/octet-stream') + '\n');
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const body = new Uint8Array(head.length + bytes.length);
+          body.set(head); body.set(bytes, head.length);
+          await api('/api/image', { method: 'POST', body });
           toast('Gambar masuk ke clipboard Mac ✓');
         } catch (e) { if (!stopped) toast('Gagal mengirim gambar: ' + e.message); }
       }
@@ -1400,7 +1658,7 @@ enum Page {
         if (files.length) { e.preventDefault(); files.reduce((p, f) => p.then(() => sendImage(f)), Promise.resolve()); }
       });
 
-      if (!token) expired(); else { showEmpty(); poll(); }
+      if (!key || key.length !== 32) expired(); else { showEmpty(); poll(); }
     })();
     </script>
     </body>

@@ -46,6 +46,20 @@ jobs:
           ditto -c -k --keepParent build/PasteLAN.app dist/PasteLAN.zip
           (cd dist && zip -q install-PasteLAN.zip install-PasteLAN.command)
 
+      # tanda tangan Ed25519 untuk auto-update (lihat scripts/sign-release.swift). Hanya saat rilis.
+      # Secret belum diatur → rilis tetap jalan tanpa .sig, aplikasi lalu mengarahkan ke halaman rilis (unduh manual).
+      - name: Tanda tangani PasteLAN.zip
+        if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || steps.ver.outputs.exists == 'false')
+        env:
+          PASTELAN_SIGNING_KEY: ${{ secrets.PASTELAN_SIGNING_KEY }}
+          TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || steps.ver.outputs.tag }}
+        run: |
+          if [ -z "$PASTELAN_SIGNING_KEY" ]; then
+            echo "::warning::Secret PASTELAN_SIGNING_KEY belum diatur → rilis tanpa tanda tangan (auto-update nonaktif)"
+            exit 0
+          fi
+          swift scripts/sign-release.swift sign dist/PasteLAN.zip "$TAG" > dist/PasteLAN.zip.sig
+
       - uses: actions/upload-artifact@v4
         with:
           name: PasteLAN
@@ -59,6 +73,7 @@ jobs:
         with:
           files: |
             dist/PasteLAN.zip
+            dist/PasteLAN.zip.sig
             dist/install-PasteLAN.zip
 
       # merge ke main dengan versi baru (tag belum ada) → tag + rilis dibuat otomatis
@@ -72,4 +87,5 @@ jobs:
           generate_release_notes: true
           files: |
             dist/PasteLAN.zip
+            dist/PasteLAN.zip.sig
             dist/install-PasteLAN.zip

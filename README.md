@@ -58,17 +58,21 @@ Dibuat dengan Swift + AppKit + Network.framework murni, satu file sumber, tanpa 
 ## Privasi & keamanan
 
 - Semua data hanya lewat **jaringan lokal**. Tidak ada server cloud, tidak ada analitik.
-- Setiap link berisi **token acak 128-bit**. Perangkat lain di Wi-Fi yang sama tanpa QR code tidak bisa masuk.
-  **Ganti link** di menu memutus semua HP yang pernah terhubung.
+- **Terenkripsi ujung-ke-ujung**: QR code berisi **kunci acak 256-bit** di bagian `#k=` link (bagian ini tidak
+  pernah dikirim lewat jaringan). Semua teks, gambar, daftar riwayat, dan nama Mac dienkripsi **ChaCha20-Poly1305**
+  (CryptoKit di Mac, JS bawaan halaman di HP). Penyadap di Wi-Fi yang sama hanya melihat ukuran & waktu, tidak bisa
+  membaca isi, memalsukan, atau mengulang request. **Ganti link** di menu memutus semua HP yang pernah terhubung.
 - Riwayat **hanya disimpan di memori** dan hilang saat PasteLAN ditutup.
 - Isi dari **password manager** (bertanda `org.nspasteboard.ConcealedType`) **tidak pernah** dikirim ke HP.
-- Hanya perangkat di **jaringan lokal** yang dilayani (koneksi dari VPN / IP publik ditolak). Token dicek sebelum
+- Hanya perangkat di **jaringan lokal** yang dilayani (koneksi dari VPN / IP publik ditolak). Kunci dicek sebelum
   isi request dibaca, dan tiap perangkat dibatasi jumlah koneksinya, supaya perangkat lain tidak bisa membebani Mac.
 - Saat pertama kali dibuka, PasteLAN **bertanya** apakah setiap copy di Mac boleh dikirim otomatis ke HP.
 - **Salin link** tidak ikut Universal Clipboard ke perangkat Apple lain dan ditandai rahasia untuk clipboard manager.
-- Koneksi memakai HTTP biasa (tidak terenkripsi). Orang yang bisa menyadap Wi-Fi yang sama bisa melihat isi
-  clipboard **dan token**-nya (lalu ikut membaca/menulis clipboard sampai link diganti). Jangan dipakai untuk data
-  sensitif di Wi-Fi yang tidak dipercaya, dan tekan **Ganti link** kalau ragu.
+- Batasan: halamannya sendiri tetap dimuat lewat HTTP. Penyerang **aktif** di Wi-Fi yang sama (mis. ARP spoofing)
+  secara teori bisa mengganti halaman itu untuk mencuri kunci. Di Wi-Fi publik yang tidak dipercaya, lebih aman
+  memakai hotspot HP sendiri, dan tekan **Ganti link** kalau ragu.
+- **Update otomatis** hanya dipasang kalau file rilis cocok dengan tanda tangan Ed25519 pemilik repo
+  (lihat [Rilis](#rilis)). Kalau tidak, PasteLAN hanya membuka halaman rilis.
 - Matikan **Berbagi aktif** di menu kapan saja untuk menutup port.
 
 ## Instal
@@ -97,6 +101,7 @@ cp -R build/PasteLAN.app /Applications/ && open /Applications/PasteLAN.app
 |---|---|
 | Server HTTP | `NWListener` (Network.framework), parser HTTP/1.1 minimal |
 | Mac → HP real-time | Long-polling (`GET /api/items?wait=1`, ditahan maks 25 detik) |
+| Enkripsi | ChaCha20-Poly1305: header `X-Auth` sekali pakai + isi & jawaban terenkripsi, kunci di `#k=` |
 | Pantau clipboard | `NSPasteboard.changeCount` tiap 0,8 detik |
 | QR code | CoreImage `CIQRCodeGenerator` |
 | Halaman HP | HTML/CSS/JS ditanam di aplikasi, tanpa CDN (jalan tanpa internet) |
@@ -107,3 +112,18 @@ Rencana pengembangan ada di [`_todo/`](_todo/), ide lanjutan (aplikasi native di
 
 Versi diatur di `Resources/Info.plist` (lihat [AGENTS.md](AGENTS.md)). Merge ke `main` dengan versi yang belum
 punya tag akan otomatis membuat tag `v<versi>` dan rilis lewat GitHub Actions.
+
+### Tanda tangan rilis (auto-update)
+
+Auto-update di aplikasi hanya memasang `PasteLAN.zip` yang punya `PasteLAN.zip.sig` valid untuk kunci publik di
+`Updater.publicKey`. Yang ditandatangani: `"PasteLAN <tag>\n"` + isi zip (Ed25519, `scripts/sign-release.swift`).
+
+1. Sekali saja, di Mac sendiri: `swift scripts/sign-release.swift keygen` → kunci privat di `~/.pastelan-signing-key`,
+   kunci publik tercetak di terminal → tempel ke `Updater.publicKey` di `main.swift`.
+2. Pilih cara menandatangani:
+   - **Otomatis (CI)**: simpan isi `~/.pastelan-signing-key` sebagai GitHub Secret `PASTELAN_SIGNING_KEY`.
+     Melindungi dari aset rilis yang diganti, tapi **tidak** dari akun GitHub yang dibobol (pembobol bisa memakai
+     secret lewat workflow).
+   - **Manual (lebih aman)**: jangan simpan secret. Setelah rilis jadi, di Mac sendiri:
+     `swift scripts/sign-release.swift sign PasteLAN.zip v<versi> > PasteLAN.zip.sig`, lalu unggah `PasteLAN.zip.sig`
+     ke halaman rilis. Kunci privat tidak pernah meninggalkan Mac Anda.
