@@ -62,7 +62,13 @@ Dibuat dengan Swift + AppKit + Network.framework murni, satu file sumber, tanpa 
   **Ganti link** di menu memutus semua HP yang pernah terhubung.
 - Riwayat **hanya disimpan di memori** dan hilang saat PasteLAN ditutup.
 - Isi dari **password manager** (bertanda `org.nspasteboard.ConcealedType`) **tidak pernah** dikirim ke HP.
-- Koneksi memakai HTTP biasa (tidak terenkripsi). Jangan dipakai untuk data sangat sensitif di Wi-Fi yang tidak dipercaya.
+- Hanya perangkat di **jaringan lokal** yang dilayani (koneksi dari VPN / IP publik ditolak). Token dicek sebelum
+  isi request dibaca, dan tiap perangkat dibatasi jumlah koneksinya, supaya perangkat lain tidak bisa membebani Mac.
+- Saat pertama kali dibuka, PasteLAN **bertanya** apakah setiap copy di Mac boleh dikirim otomatis ke HP.
+- **Salin link** tidak ikut Universal Clipboard ke perangkat Apple lain dan ditandai rahasia untuk clipboard manager.
+- Koneksi memakai HTTP biasa (tidak terenkripsi). Orang yang bisa menyadap Wi-Fi yang sama bisa melihat isi
+  clipboard **dan token**-nya (lalu ikut membaca/menulis clipboard sampai link diganti). Jangan dipakai untuk data
+  sensitif di Wi-Fi yang tidak dipercaya, dan tekan **Ganti link** kalau ragu.
 - Matikan **Berbagi aktif** di menu kapan saja untuk menutup port.
 
 ## Instal

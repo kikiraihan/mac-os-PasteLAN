@@ -6,6 +6,7 @@
 // Build: ./scripts/build.sh  (butuh Xcode Command Line Tools)
 
 import Cocoa
+import ImageIO
 import Network
 import CoreImage
 import SystemConfiguration
@@ -60,6 +61,30 @@ func computerName() -> String {
 
 // MARK: - IP lokal
 
+/// Interface yang bukan jaringan lokal (VPN, AirDrop, loopback, tunnel)
+let skippedInterfaces = ["utun", "ipsec", "awdl", "llw", "lo", "gif", "stf"]
+
+/// Subnet IPv4 interface lokal Mac (host byte order) → HP di LAN ber-IP non-pribadi tetap dikenali sebagai lokal
+func localSubnets() -> [(net: UInt32, mask: UInt32)] {
+    var ifaddr: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return [] }
+    defer { freeifaddrs(ifaddr) }
+    func ipv4(_ sa: UnsafeMutablePointer<sockaddr>) -> UInt32 {
+        sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+    }
+    var out: [(net: UInt32, mask: UInt32)] = []
+    for p in sequence(first: first, next: { $0.pointee.ifa_next }) {
+        let flags = p.pointee.ifa_flags
+        guard let sa = p.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET), let nm = p.pointee.ifa_netmask,
+              flags & UInt32(IFF_UP) != 0, flags & UInt32(IFF_LOOPBACK) == 0 else { continue }
+        let name = String(cString: p.pointee.ifa_name)
+        if skippedInterfaces.contains(where: { name.hasPrefix($0) }) { continue }
+        let mask = ipv4(nm)
+        if mask != 0 { out.append((ipv4(sa) & mask, mask)) }
+    }
+    return out
+}
+
 /// Alamat IPv4 Mac di jaringan lokal. Utamakan Wi-Fi / Ethernet (en*), lalu Internet Sharing (bridge*);
 /// VPN (utun, ipsec), AirDrop (awdl, llw), loopback & link-local (169.254.x.x) diabaikan.
 func localIPv4() -> String? {
@@ -72,7 +97,7 @@ func localIPv4() -> String? {
         guard let sa = p.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET),
               flags & UInt32(IFF_UP) != 0, flags & UInt32(IFF_LOOPBACK) == 0 else { continue }
         let name = String(cString: p.pointee.ifa_name)
-        if ["utun", "ipsec", "awdl", "llw", "lo", "gif", "stf"].contains(where: { name.hasPrefix($0) }) { continue }
+        if skippedInterfaces.contains(where: { name.hasPrefix($0) }) { continue }
         var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
         guard getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
         let ip = String(cString: host)
@@ -180,6 +205,17 @@ final class Clipboard {
     let maxText = 2 * 1024 * 1024
     let maxImage = 30 * 1024 * 1024
     static let imageExts = ["png", "jpg", "jpeg", "gif", "heic", "heif", "tif", "tiff", "webp", "bmp"]
+    /// Format gambar dari HP yang diterima; MIME lain disimpan sebagai image/png (mis. SVG tidak pernah disajikan ulang)
+    static let imageMimes = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/heic", "image/tiff"]
+    static let maxPixels = 100_000_000 // 100 megapiksel
+
+    /// Lebar × tinggi dari header gambar saja (tanpa decode penuh) → "bom dekompresi" ditolak sebelum dibuka
+    static func pixelCount(_ data: Data) -> Int? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+              let p = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let w = p[kCGImagePropertyPixelWidth] as? Int, let h = p[kCGImagePropertyPixelHeight] as? Int else { return nil }
+        return w * h
+    }
 
     /// macOS tidak punya notifikasi perubahan clipboard → cek changeCount (satu integer, sangat ringan)
     func startWatching() {
@@ -213,7 +249,8 @@ final class Clipboard {
 
     /// TIFF (dibaca semua aplikasi) + format asli (PNG/JPEG) supaya kualitas tidak turun
     func writeImage(_ data: Data, mime: String?) -> Bool {
-        guard let img = NSImage(data: data), img.isValid else { return false }
+        guard let px = Clipboard.pixelCount(data), px <= Clipboard.maxPixels,
+              let img = NSImage(data: data), img.isValid else { return false }
         pb.clearContents()
         pb.writeObjects([img])
         let original: NSPasteboard.PasteboardType? =
@@ -297,10 +334,15 @@ final class HTTPConnection {
     private let maxBody: Int
     private var buffer = Data()
     private var parsed = false
+    private var headerOK = false // header lengkap & lolos cek token/batas body
     private var responded = false
     private(set) var closed = false
+    let host: String // IP pengirim (tanpa port), untuk membatasi koneksi per perangkat
     var onRequest: ((HTTPRequest, HTTPConnection) -> Void)?
     var onClose: (() -> Void)?
+    /// Dipanggil begitu header lengkap, SEBELUM body dibaca: batas body, atau nil = tolak (403).
+    /// Supaya perangkat tanpa token tidak bisa memenuhi memori dengan body besar.
+    var bodyLimit: (_ method: String, _ path: String, _ query: [String: String], _ headers: [String: String]) -> Int? = { _, _, _, _ in nil }
 
     static let reasons = [200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed",
                           411: "Length Required", 413: "Payload Too Large", 415: "Unsupported Media Type",
@@ -309,6 +351,7 @@ final class HTTPConnection {
     init(_ c: NWConnection, maxBody: Int) {
         conn = c
         self.maxBody = maxBody
+        if case let .hostPort(h, _) = c.endpoint { host = "\(h)" } else { host = "\(c.endpoint)" }
     }
 
     /// Masih menunggu jawaban (mis. long-poll yang sedang ditahan)
@@ -326,6 +369,10 @@ final class HTTPConnection {
         // klien yang tidak kunjung mengirim request lengkap diputus
         DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
             if let self, !self.parsed { self.cancel() }
+        }
+        // header saja harus lengkap jauh lebih cepat → slot koneksi tidak bisa ditahan klien yang diam
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            if let self, !self.headerOK { self.cancel() }
         }
     }
 
@@ -359,19 +406,25 @@ final class HTTPConnection {
         if headers["transfer-encoding"] != nil { respond(411, text: "Content-Length wajib"); return true }
         let length = Int(headers["content-length"] ?? "0") ?? -1
         guard length >= 0 else { respond(400, text: "Content-Length tidak valid"); return true }
-        guard length <= maxBody else { respond(413, text: "Terlalu besar (maks \(byteString(maxBody)))"); return true }
+        let method = String(first[0]), target = String(first[1])
+        let comps = URLComponents(string: target)
+        var query: [String: String] = [:]
+        for q in comps?.queryItems ?? [] { query[q.name] = q.value ?? "" }
+        let path = comps?.path ?? String(target.split(separator: "?").first ?? "/")
+        // token & batas body dicek sebelum body ditunggu / disimpan di memori
+        guard let allowed = bodyLimit(method, path, query, headers) else {
+            respond(403, type: "application/json; charset=utf-8", body: json(["error": "token"])); return true
+        }
+        let limit = min(allowed, maxBody)
+        guard length <= limit else { respond(413, text: "Terlalu besar (maks \(byteString(limit)))"); return true }
+        headerOK = true
         let bodyStart = end.upperBound
         guard buffer.endIndex - bodyStart >= length else { return false }
 
         let body = buffer.subdata(in: bodyStart..<bodyStart + length)
         parsed = true
         buffer = Data()
-        let target = String(first[1])
-        let comps = URLComponents(string: target)
-        var query: [String: String] = [:]
-        for q in comps?.queryItems ?? [] { query[q.name] = q.value ?? "" }
-        let path = comps?.path ?? String(target.split(separator: "?").first ?? "/")
-        onRequest?(HTTPRequest(method: String(first[0]), path: path, query: query, headers: headers, body: body), self)
+        onRequest?(HTTPRequest(method: method, path: path, query: query, headers: headers, body: body), self)
         return true
     }
 
@@ -417,10 +470,12 @@ final class HTTPServer {
     private(set) var port: UInt16?
     private(set) var failed = false
     var handler: ((HTTPRequest, HTTPConnection) -> Void)?
+    var bodyLimit: (_ method: String, _ path: String, _ query: [String: String], _ headers: [String: String]) -> Int? = { _, _, _, _ in nil }
     var onChange: (() -> Void)?
 
     let maxBody = 30 * 1024 * 1024
     let maxConnections = 64
+    let maxPerHost = 8 // satu halaman HP butuh 1 long-poll + beberapa request kirim / gambar
 
     var running: Bool { port != nil }
 
@@ -468,13 +523,37 @@ final class HTTPServer {
     }
 
     private func accept(_ nc: NWConnection) {
-        guard conns.count < maxConnections else { return nc.cancel() }
+        // hanya perangkat di jaringan lokal (bukan VPN / IP publik), dan satu perangkat tidak boleh memborong slot
+        guard HTTPServer.isLocalPeer(nc.endpoint), conns.count < maxConnections else { return nc.cancel() }
         let c = HTTPConnection(nc, maxBody: maxBody)
+        guard conns.values.filter({ $0.host == c.host }).count < maxPerHost else { return nc.cancel() }
         let key = ObjectIdentifier(c)
         conns[key] = c
+        c.bodyLimit = { [weak self] m, p, q, h in self?.bodyLimit(m, p, q, h) }
         c.onRequest = { [weak self] req, c in self?.handler?(req, c) }
         c.onClose = { [weak self] in self?.conns[key] = nil }
         c.start()
+    }
+
+    /// IP pribadi (10/8, 172.16/12, 192.168/16), satu subnet dengan Mac, link-local, loopback,
+    /// atau IPv6 lokal (fe80::/10, fc00::/7)
+    static func isLocalPeer(_ ep: NWEndpoint) -> Bool {
+        guard case let .hostPort(host, _) = ep else { return false }
+        var v4: IPv4Address?
+        switch host {
+        case .ipv4(let a): v4 = a
+        case .ipv6(let a):
+            if let m = a.asIPv4 { v4 = m }
+            else { return a.isLinkLocal || a.isLoopback || ([UInt8](a.rawValue).first ?? 0) & 0xfe == 0xfc }
+        default: return false
+        }
+        guard let a = v4 else { return false }
+        let b = [UInt8](a.rawValue)
+        guard b.count == 4 else { return false }
+        if b[0] == 10 || (b[0] == 172 && (16...31).contains(b[1])) || (b[0] == 192 && b[1] == 168)
+            || a.isLinkLocal || a.isLoopback { return true }
+        let ip = b.reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+        return localSubnets().contains { ip & $0.mask == $0.net }
     }
 }
 
@@ -687,6 +766,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = menu
 
         server.handler = { [weak self] r, c in self?.handle(r, c) }
+        server.bodyLimit = { [weak self] m, p, q, h in self?.bodyLimit(m, p, q, h) }
         server.onChange = { [weak self] in self?.updateIcon() }
         store.onAdd = { [weak self] _ in self?.wakeWaiters() }
         clipboard.onChange = { [weak self] in self?.sendClipboard() }
@@ -696,7 +776,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if !d.bool(forKey: "didOnboard") {
             d.set(true, forKey: "didOnboard")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.showHelp() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.showHelp()
+                self.askAutoSend()
+            }
         }
     }
 
@@ -747,7 +830,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         d.set(token, forKey: "token")
     }
 
+    /// Pertama kali dipakai: pengguna memilih sendiri apakah setiap copy di Mac langsung tersedia untuk HP
+    func askAutoSend() {
+        let a = NSAlert()
+        a.messageText = "Kirim setiap copy di Mac ke HP secara otomatis?"
+        a.informativeText = "Kalau ya, semua yang Anda copy (⌘C) di Mac langsung muncul di halaman HP yang terhubung. " +
+            "Kalau tidak, kirim manual lewat menu \"Kirim clipboard Mac sekarang\". Bisa diubah kapan saja di menu."
+        a.addButton(withTitle: "Ya, otomatis")
+        a.addButton(withTitle: "Manual saja")
+        NSApp.activate(ignoringOtherApps: true)
+        d.set(a.runModal() == .alertFirstButtonReturn, forKey: "autoSend")
+        applySharing()
+    }
+
     // MARK: HTTP
+
+    /// Dicek begitu header request lengkap (sebelum body dibaca): batas body, atau nil = token salah (403)
+    func bodyLimit(_ method: String, _ path: String, _ query: [String: String], _ headers: [String: String]) -> Int? {
+        guard path.hasPrefix("/api/") else { return 0 } // halaman HTML: token dicek di handle(), tanpa body
+        guard sameToken(headers["x-token"] ?? query["t"], token) else { return nil }
+        switch (method, path) {
+        case ("POST", "/api/text"): return clipboard.maxText
+        case ("POST", "/api/image"): return clipboard.maxImage
+        default: return 0
+        }
+    }
 
     func handle(_ r: HTTPRequest, _ c: HTTPConnection) {
         if r.path == "/" || r.path == "/index.html" {
@@ -793,7 +900,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard !r.body.isEmpty, clipboard.writeImage(r.body, mime: mime) else {
                 return c.respondJSON(["error": "Bukan gambar yang didukung"], status: 415)
             }
-            let clip = store.add(kind: "image", from: "phone", data: r.body, mime: mime.hasPrefix("image/") ? mime : "image/png")
+            // MIME dari HP disajikan ulang sebagai Content-Type → hanya format gambar biasa (bukan image/svg+xml dll.)
+            let clip = store.add(kind: "image", from: "phone", data: r.body, mime: Clipboard.imageMimes.contains(mime) ? mime : "image/png")
             if d.bool(forKey: "saveImages") { saveToDownloads(r.body, mime: clip.mime) }
             flash()
             c.respondJSON(["ok": true, "id": clip.id])
@@ -963,7 +1071,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc func copyLink() {
         guard let url = shareURL else { return }
-        clipboard.writeText(url)
+        // link berisi token → jangan ikut Universal Clipboard (perangkat Apple lain) & tandai rahasia untuk clipboard manager
+        let pb = clipboard.pb
+        _ = pb.prepareForNewContents(with: .currentHostOnly)
+        pb.setString(url, forType: .string)
+        pb.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        clipboard.markOwnWrite()
     }
     @objc func recopy(_ s: NSMenuItem) {
         guard let id = s.representedObject as? Int, let c = store.clip(id) else { return }
