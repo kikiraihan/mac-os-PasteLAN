@@ -8,10 +8,11 @@
 > - **v0.2.0**: enkripsi ujung-ke-ujung ChaCha20-Poly1305 (kunci di `#k=`, header `X-Auth` sekali pakai, anti
 >   replay, toleransi jam ±5 menit lewat 409), dan auto-update wajib tanda tangan Ed25519.
 
-## 1. Kunci publik update belum diisi
+## 1. ~~Kunci publik update belum diisi~~ (selesai di v0.2.1)
 
-`Updater.publicKey` masih kosong sampai pemilik repo menjalankan `swift scripts/sign-release.swift keygen` di Mac
-sendiri dan menempelkan kunci publiknya. Selama kosong, "Update sekarang" hanya membuka halaman rilis (aman).
+`Updater.publicKey` sudah diisi. Pengguna v0.2.0 (kunci masih kosong) diarahkan ke halaman rilis sekali untuk
+update manual ke v0.2.1; setelah itu update otomatis berjalan dengan verifikasi tanda tangan.
+Rilis tanpa `PasteLAN.zip.sig` yang valid tetap hanya membuka halaman rilis.
 
 ## 2. Penyerang aktif di Wi-Fi yang sama (prioritas rendah–sedang)
 
