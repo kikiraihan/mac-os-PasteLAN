@@ -25,6 +25,7 @@ sebagai aplikasi. Opsi A tetap terdokumentasi di `../opsi-a-mac-app-plus-browser
 - [x] Tes: `go test -race`, E2E Chromium (server asli), klien Swift ⇄ server (Linux)
 - [x] CI: tes Go + binary server Linux (amd64/arm64) ikut rilis; deploy systemd + Caddy
 - [x] v1.1.0: metode Wi-Fi lokal opsional (menu → Metode), kode v0.3.0 dipulihkan sebagai `LANServer`
+- [x] v1.1.0: "Tambah HP (scan QR)…" di Mac → HP masuk tanpa password (kode sekali pakai, 5 menit)
 - [ ] Uji di Mac & HP nyata: login, install PWA, kirim dua arah, cabut perangkat
 - [ ] Uji metode Wi-Fi lokal di Mac nyata & ganti-ganti metode
 - [ ] Pasang server di VPS pemilik

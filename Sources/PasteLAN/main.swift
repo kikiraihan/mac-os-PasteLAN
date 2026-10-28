@@ -435,6 +435,19 @@ final class PasteServer {
         }
     }
 
+    /// Link QR sekali pakai (5 menit) untuk menambah perangkat tanpa password: https://server/#pair=<kode>
+    func pairLink(_ done: @escaping (URL?, Date?, String?) -> Void) {
+        send(request("POST", "/api/pair")) { status, data, err in
+            if status == 401 { self.unauthorized() }
+            guard status == 200, let base = self.base,
+                  let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let code = j["code"] as? String, let exp = (j["expires"] as? NSNumber)?.doubleValue,
+                  let url = URL(string: base.absoluteString + "/#pair=" + code)
+            else { return done(nil, nil, PasteServer.errorText(data, status, err)) }
+            done(url, Date(timeIntervalSince1970: exp / 1000), nil)
+        }
+    }
+
     func image(_ id: Int, _ done: @escaping (Data?) -> Void) {
         send(request("GET", "/api/image/\(id)")) { status, data, _ in done(status == 200 ? data : nil) }
     }
@@ -1878,6 +1891,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         applySharing()
     }
 
+    /// QR sekali pakai (5 menit): HP scan → langsung masuk tanpa mengetik password.
+    /// Kode hanya dibuat saat diminta (bukan setiap menu dibuka), supaya QR yang berlaku tidak sering tampil di layar.
+    @objc func pairPhone() {
+        server.pairLink { [weak self] url, expires, err in
+            guard let self else { return }
+            guard let url, let expires else { return self.showError("Gagal membuat QR", err ?? "Tidak diketahui") }
+            let f = DateFormatter()
+            f.dateFormat = "HH.mm"
+            let a = NSAlert()
+            a.messageText = "Tambah HP ke PasteLAN"
+            a.informativeText = "Scan dengan kamera HP. HP langsung masuk tanpa password, lalu pilih \"Install\" / " +
+                "\"Tambahkan ke Layar Utama\".\n\nQR ini hanya untuk satu HP dan berlaku sampai \(f.string(from: expires)). " +
+                "Jangan bagikan / foto layar ini."
+            let qr: CGFloat = 220
+            let iv = NSImageView(frame: NSRect(x: 0, y: 0, width: qr, height: qr))
+            iv.image = qrImage(url.absoluteString, points: qr)
+            iv.wantsLayer = true
+            iv.layer?.backgroundColor = NSColor.white.cgColor // QR selalu di atas putih supaya terbaca kamera
+            iv.layer?.cornerRadius = 6
+            a.accessoryView = iv
+            a.addButton(withTitle: "Selesai")
+            NSApp.activate(ignoringOtherApps: true)
+            a.runModal()
+        }
+    }
+
     @objc func openWeb() {
         if let url = serverURL { NSWorkspace.shared.open(url) }
     }
@@ -1932,11 +1971,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let st = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
         st.isEnabled = false
         menu.addItem(st)
-        if loggedIn, let url = serverURL {
-            // alamat server saja (tanpa rahasia): HP membukanya lalu login dengan password & install sebagai aplikasi
-            let qr = NSMenuItem()
-            qr.view = qrView(url: url.absoluteString, info: "Scan dengan kamera HP, login, lalu \"Install\" / \"Tambahkan ke Layar Utama\"")
-            menu.addItem(qr)
+        if loggedIn, serverURL != nil {
+            add("Tambah HP (scan QR, tanpa password)…", #selector(pairPhone))
             add("Buka PasteLAN di browser (kelola perangkat)", #selector(openWeb))
             add("Ganti server…", #selector(setupServer))
             add("Keluar dari server…", #selector(logoutServer))
@@ -2153,8 +2189,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Mac dan HP tidak perlu di Wi-Fi yang sama.
 
         1. Klik ikon ⇄ di menu bar → "Atur server & login…", isi alamat server dan password-nya.
-        2. Scan QR code di menu dengan kamera HP, login dengan password yang sama, lalu pilih \
-        "Install" / "Tambahkan ke Layar Utama" supaya PasteLAN jadi aplikasi di HP.
+        2. Menu → "Tambah HP (scan QR)…", scan dengan kamera HP (HP langsung masuk tanpa password), lalu pilih \
+        "Install" / "Tambahkan ke Layar Utama" supaya PasteLAN jadi aplikasi di HP. \
+        Bisa juga: buka alamat server di HP dan masuk dengan password.
         3. HP → Mac: tempel teks atau pilih gambar, tekan "Kirim", lalu ⌘V di Mac.
         4. Mac → HP: copy apa saja di Mac (⌘C), isinya muncul di HP. Tekan "Salin".
 

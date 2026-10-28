@@ -36,8 +36,8 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
 
 1. **Pasang server** di VPS Anda (sekali saja), lihat [Server](#server).
 2. **Mac**: klik ikon **⇄** di menu bar → **Atur server & login…** → isi alamat server dan password.
-3. **HP**: scan QR code di menu Mac (atau buka alamat server), login dengan password yang sama, lalu
-   **Install** / **Tambahkan ke Layar Utama**.
+3. **HP**: menu Mac → **Tambah HP (scan QR)…**, scan dengan kamera HP → HP langsung masuk **tanpa mengetik
+   password**. Lalu **Install** / **Tambahkan ke Layar Utama**. (Atau buka alamat server di HP dan masuk dengan password.)
 4. **HP → Mac**: tempel teks / pilih gambar, tekan **Kirim**, lalu ⌘V di Mac.
    **Mac → HP**: copy apa saja di Mac, isinya muncul di HP.
 
@@ -50,7 +50,7 @@ Pilih di menu **⇄ → Metode**. Hanya satu yang aktif; metode yang tidak dipak
 | Butuh | Server sendiri (VPS + domain) | Mac & HP di Wi-Fi yang sama (atau Mac memakai hotspot HP) |
 | Jarak | Di mana saja (internet) | Satu jaringan |
 | HP | PWA, bisa di-install; **Salin gambar** | Halaman web dari Mac (HTTP lokal); salin gambar dengan tekan lama |
-| Masuk | Password sekali per perangkat → token | Scan QR (kunci 256-bit di link) |
+| Masuk | Scan QR dari Mac, atau password → token per perangkat | Scan QR (kunci 256-bit di link) |
 | Keamanan | HTTPS | Isi dienkripsi ChaCha20-Poly1305 dengan kunci di QR |
 
 Mode Wi-Fi lokal:
@@ -71,12 +71,15 @@ Mode Wi-Fi lokal:
 ## Keamanan
 
 - **HTTPS** wajib (Caddy / Let's Encrypt). Server sendiri hanya mendengarkan `127.0.0.1`.
+- **QR sekali pakai**: "Tambah HP (scan QR)…" di Mac membuat kode acak 256-bit yang berlaku **5 menit** dan hanya
+  untuk **satu** perangkat (server hanya menyimpan hash-nya; kode ada di `#pair=` sehingga tidak masuk log / Referer,
+  dan langsung dihapus dari alamat setelah dipakai). Kode hanya dibuat saat diminta, bukan setiap menu dibuka.
 - **Password + token per perangkat**: password hanya dipakai sekali saat login. Setiap perangkat mendapat token acak
   256-bit sendiri; server hanya menyimpan **hash**-nya. Perangkat yang hilang bisa **dicabut** dari
   Pengaturan di halaman PasteLAN (atau "Keluar" di perangkat itu).
   - Browser: token di cookie `HttpOnly` + `Secure` + `SameSite=Strict` (tidak bisa dibaca JavaScript).
   - Mac: token di **Keychain**.
-- **Batas percobaan login**: 5× salah dari satu IP → IP itu dikunci 15 menit; 100× salah per jam dari semua IP →
+- **Batas percobaan login** (password atau kode QR): 5× salah dari satu IP → IP itu dikunci 15 menit; 100× salah per jam dari semua IP →
   login baru ditutup 15 menit (perangkat yang sudah login tetap jalan).
 - **Isi clipboard hanya di memori server**: maks 20 item / 150 MB, kedaluwarsa **24 jam**, hilang saat server
   restart. Tidak pernah ditulis ke disk atau log. Pemilik server (Anda) secara teknis bisa melihat isinya.

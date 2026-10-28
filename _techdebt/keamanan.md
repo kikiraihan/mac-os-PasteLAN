@@ -7,7 +7,10 @@
 ## Model ancaman — metode server (default)
 
 - **Penyadap jaringan**: tertutup oleh HTTPS (+ HSTS).
-- **Orang lain menebak password**: batas percobaan per IP (/64 untuk IPv6) + batas global; password minimal 12 karakter.
+- **Orang lain menebak password / kode QR**: batas percobaan per IP (/64 untuk IPv6) + batas global; password minimal
+  12 karakter; kode QR 256-bit, sekali pakai, 5 menit, maks 10 aktif.
+- **Foto layar QR "Tambah HP"**: siapa pun yang memotret QR itu dalam 5 menit bisa masuk (sekali). Diterima; QR hanya
+  dibuat saat diminta, dan perangkat asing bisa dicabut dari Pengaturan.
 - **Situs lain memanggil API (CSRF)**: header wajib `X-PasteLAN` + cookie `SameSite=Strict`, tanpa CORS.
 - **XSS lewat isi clipboard**: isi selalu `textContent`; CSP tanpa `unsafe-inline`; gambar dicek dari isi (tanpa SVG).
 - **Perangkat hilang**: cabut tokennya dari Pengaturan; token hanya tersimpan sebagai hash di server.
