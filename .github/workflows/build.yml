@@ -1,0 +1,75 @@
+name: Build
+
+# Build otomatis di mesin macOS GitHub → pengguna tinggal unduh .app jadi
+# (tidak perlu Xcode Command Line Tools di Mac sendiri).
+# Rilis otomatis: naikkan CFBundleShortVersionString di Resources/Info.plist, lalu merge ke main.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # versi rilis = CFBundleShortVersionString di Info.plist → tag v<versi>
+      - name: Baca versi
+        id: ver
+        run: |
+          V=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+          echo "tag=v$V" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$V" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build PasteLAN.app (universal)
+        run: ARCH=universal ./scripts/build.sh
+
+      # izin firewall (koneksi masuk) hanya bertahan antar-versi kalau designated requirement tidak memakai cdhash
+      - name: Cek designated requirement
+        run: |
+          codesign -d -r- build/PasteLAN.app 2>&1 | tee /dev/stderr \
+            | grep -q 'designated => identifier "id.local.pastelan"$'
+
+      - name: Buat installer & zip
+        run: |
+          ./scripts/make-installer.sh
+          ditto -c -k --keepParent build/PasteLAN.app dist/PasteLAN.zip
+          (cd dist && zip -q install-PasteLAN.zip install-PasteLAN.command)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PasteLAN
+          path: |
+            dist/PasteLAN.zip
+            dist/install-PasteLAN.zip
+
+      - name: Rilis (kalau push tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/PasteLAN.zip
+            dist/install-PasteLAN.zip
+
+      # merge ke main dengan versi baru (tag belum ada) → tag + rilis dibuat otomatis
+      - name: Rilis otomatis (push ke main, versi belum dirilis)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ver.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: PasteLAN ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: |
+            dist/PasteLAN.zip
+            dist/install-PasteLAN.zip
