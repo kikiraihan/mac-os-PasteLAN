@@ -1,0 +1,9 @@
+# Caddy: HTTPS otomatis (Let's Encrypt) di depan PasteLAN server
+# Ganti domain di bawah, arahkan DNS-nya ke VPS, lalu: sudo systemctl reload caddy
+pastelan.example.com {
+	encode gzip
+	request_body {
+		max_size 32MB
+	}
+	reverse_proxy 127.0.0.1:8080
+}

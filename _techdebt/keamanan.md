@@ -1,34 +1,23 @@
-# Keamanan — sisa temuan audit
+# Keamanan — catatan
 
-> Status: **tech debt**. Hasil audit keamanan (v0.1.0).
->
-> - **v0.1.1**: kunci dicek sebelum body dibaca, batas body per endpoint, hanya IP lokal, batas koneksi per
->   perangkat, batas waktu header 10 detik, whitelist MIME gambar, batas 100 megapiksel, "Salin link" tidak ikut
->   Universal Clipboard, pilihan kirim otomatis saat pertama kali dibuka.
-> - **v0.2.0**: enkripsi ujung-ke-ujung ChaCha20-Poly1305 (kunci di `#k=`, header `X-Auth` sekali pakai, anti
->   replay, toleransi jam ±5 menit lewat 409), dan auto-update wajib tanda tangan Ed25519.
+> Status: **tech debt**. Riwayat: audit v0.1.0 → perbaikan v0.1.1–v0.3.0 (mode Wi-Fi lokal: kunci di QR,
+> enkripsi ChaCha20-Poly1305, pembatasan IP lokal). Sejak **v1.0.0** mode Wi-Fi lokal diganti server sendiri
+> (lihat `_todo/opsi-c-server/`), jadi temuan khusus mode lokal (penyerang aktif di Wi-Fi yang sama, kunci di
+> fragment URL, enkripsi JS) tidak berlaku lagi.
 
-## 1. ~~Kunci publik update belum diisi~~ (selesai di v0.2.1)
+## Model ancaman v1.0.0
 
-`Updater.publicKey` sudah diisi. Pengguna v0.2.0 (kunci masih kosong) diarahkan ke halaman rilis sekali untuk
-update manual ke v0.2.1; setelah itu update otomatis berjalan dengan verifikasi tanda tangan.
-Rilis tanpa `PasteLAN.zip.sig` yang valid tetap hanya membuka halaman rilis.
+- **Penyadap jaringan**: tertutup oleh HTTPS (+ HSTS).
+- **Orang lain menebak password**: batas percobaan per IP (/64 untuk IPv6) + batas global; password minimal 12 karakter.
+- **Situs lain memanggil API (CSRF)**: header wajib `X-PasteLAN` + cookie `SameSite=Strict`, tanpa CORS.
+- **XSS lewat isi clipboard**: isi selalu `textContent`; CSP tanpa `unsafe-inline`; gambar dicek dari isi (tanpa SVG).
+- **Perangkat hilang**: cabut tokennya dari Pengaturan; token hanya tersimpan sebagai hash di server.
+- **Server bocor (disk / backup)**: `devices.json` hanya berisi hash token; isi clipboard tidak pernah di disk.
+- **Pemilik / pembobol server yang sedang berjalan**: bisa membaca isi clipboard di memori. Diterima (dipilih
+  pemilik: tanpa E2E supaya tetap simpel).
 
-## 2. Penyerang aktif di Wi-Fi yang sama (prioritas rendah–sedang)
+## Ide lanjutan (belum perlu)
 
-Halaman HP tetap dimuat lewat HTTP. Penyerang **aktif** (ARP spoofing / Wi-Fi palsu) bisa mengganti JS halaman
-dan membaca kunci dari `#k=`. Penyadap pasif sudah tidak bisa apa-apa.
-
-Pilihan perbaikan:
-
-- TLS dengan sertifikat yang di-pin saat pairing → butuh aplikasi native di HP (lihat `konsep_opsi_b.md`).
-- Mitigasi kecil: daftar IP perangkat yang terhubung di menu + notifikasi saat clipboard Mac ditulis dari HP,
-  supaya perangkat asing cepat ketahuan.
-
-## 3. Lain-lain (prioritas rendah)
-
-- Kunci ada di fragment URL → tidak dikirim ke jaringan, tapi tetap tersimpan di riwayat / bookmark browser HP
-  (bisa tersinkron ke iCloud / Chrome Sync) dan di `localStorage` halaman.
-- Kunci tidak kedaluwarsa otomatis. Opsi "Reset link tiap N hari / tiap aplikasi dibuka" bisa ditambahkan.
-- Enkripsi gambar besar di HP memakai JS murni (±0,7 detik per 10 MB di desktop, beberapa detik di HP untuk 30 MB)
-  dan berjalan di thread utama. Bisa dipindah ke Web Worker kalau terasa macet.
+- Enkripsi ujung-ke-ujung (kunci dari password, WebCrypto ⇄ CryptoKit) kalau server dipakai bersama / tidak dipercaya.
+- Ganti password otomatis mencabut semua token (sekarang: cabut manual dari Pengaturan).
+- Kunci auto-update di GitHub Secrets bisa dipakai pembobol akun GitHub; tanda tangan manual lebih aman (README → Rilis).

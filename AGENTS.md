@@ -31,14 +31,21 @@ Merge ke `main` dengan versi yang belum punya tag akan otomatis membuat tag `v<v
 
 ## Struktur & catatan proyek
 
-- Satu file sumber: `Sources/PasteLAN/main.swift` (Swift + AppKit + Network.framework, tanpa dependensi).
-  Halaman web untuk HP ditanam di file yang sama (`enum Page`), tanpa resource eksternal / CDN.
+- Dua komponen, keduanya tanpa dependensi:
+  - Aplikasi Mac: satu file `Sources/PasteLAN/main.swift` (Swift + AppKit), klien server PasteLAN
+    (`PasteServer`, hanya Foundation), token di Keychain.
+  - Server: `server/` (Go, standard library saja). Halaman web / PWA di `server/web/` (HTML/CSS/JS biasa,
+    tanpa framework / CDN, di-`embed` ke binary). Cek: `cd server && gofmt -l . && go vet ./... && go test -race ./...`.
+- Versi di `Resources/Info.plist` berlaku untuk keduanya (satu rilis = aplikasi Mac + binary server).
 - Rencana kerja ada di `_todo/` (satu folder per inisiatif: file sprint + `00-tracker.md`).
   Perbarui tracker setiap kali tugas selesai.
 - Ide yang ditunda / utang teknis ada di `_techdebt/`.
-- Keamanan: semua isi `/api/` dienkripsi ChaCha20-Poly1305 (Swift `CryptoKit` ⇄ JS `AEAD` di `enum Page`, format
-  `nonce + ciphertext + tag`, AAD `PL1|req|…`, `PL1|body|…`, `PL1|resp|…`). Ubah format di kedua sisi sekaligus.
+- Keamanan (jangan dilonggarkan): HTTPS lewat reverse proxy; password → token per perangkat (server hanya simpan
+  hash); semua `/api/` wajib header `X-PasteLAN: 1`; cookie `HttpOnly` + `Secure` + `SameSite=Strict`;
+  CSP tanpa `unsafe-*` (jangan tambah script / style inline atau CDN); isi clipboard hanya di memori server dan
+  selalu ditampilkan lewat `textContent`; jenis gambar dicek dari isi (tanpa SVG).
   Auto-update wajib tanda tangan Ed25519 (`scripts/sign-release.swift`). Jangan pernah meminta / menyimpan kunci privat.
-  Sisa temuan audit di `_techdebt/keamanan.md`.
+  Catatan keamanan di `_techdebt/keamanan.md`.
 - Tidak ada Mac di lingkungan agen cloud: cek sintaks dengan `swiftc -parse Sources/PasteLAN/main.swift`
-  (toolchain Swift Linux), build sebenarnya dicek oleh GitHub Actions (macOS).
+  (toolchain Swift Linux), build sebenarnya dicek oleh GitHub Actions (macOS). Bagian `PasteServer` hanya memakai
+  Foundation, jadi bisa dikompilasi & diuji di Linux terhadap server Go.

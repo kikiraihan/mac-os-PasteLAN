@@ -1,86 +1,83 @@
 # PasteLAN
 
-Aplikasi menu bar macOS **ringan** untuk berbagi **copy-paste teks & gambar** antara Mac dan HP
-lewat **Wi-Fi yang sama**. Tanpa cloud, tanpa akun, dan **tanpa install aplikasi di HP**: cukup scan QR code.
-Dibuat dengan Swift + AppKit + Network.framework murni, satu file sumber, tanpa dependensi.
+Berbagi **copy-paste teks & gambar** antara Mac dan HP lewat **server PasteLAN milik Anda sendiri**.
+Ringan dan sederhana: aplikasi menu bar macOS (Swift, satu file) + server kecil (Go, satu binary, tanpa dependensi)
++ halaman web yang bisa di-**install sebagai aplikasi (PWA)** di HP. Mac dan HP **tidak perlu di Wi-Fi yang sama**.
 
 ```
- ┌──────── Mac ────────┐                  ┌──────── HP (browser) ────────┐
- │  ⌘C  ───────────────┼──── Wi-Fi ──────▶│  muncul otomatis → "Salin"   │
- │  ⌘V  ◀──────────────┼──── lokal ───────┤  tempel / pilih gambar → Kirim│
- └─────────────────────┘                  └──────────────────────────────┘
+ ┌──────── Mac ────────┐            ┌──── Server Anda ────┐            ┌──── HP (PWA) ────────────┐
+ │  ⌘C  ───────────────┼── HTTPS ──▶│  isi hanya di RAM,  │── HTTPS ──▶│  muncul otomatis → Salin │
+ │  ⌘V  ◀──────────────┼────────────┤  maks 20 item / 24j │◀───────────┤  tempel / gambar → Kirim │
+ └─────────────────────┘            └─────────────────────┘            └──────────────────────────┘
 ```
 
 <p align="center">
-  <img src="docs/screenshots/hp-light.png" width="260" alt="Halaman PasteLAN di HP (terang)">
-  <img src="docs/screenshots/hp-dark.png" width="260" alt="Halaman PasteLAN di HP (gelap)">
+  <img src="docs/screenshots/hp-light.png" width="260" alt="PasteLAN di HP (terang)">
+  <img src="docs/screenshots/hp-dark.png" width="260" alt="PasteLAN di HP (gelap)">
 </p>
 
 ## Fitur
 
-- **HP → Mac**: tempel teks atau pilih gambar (bisa beberapa sekaligus), tekan **Kirim ke Mac**,
-  lalu ⌘V di Mac. Gambar juga bisa ditempel langsung di kotak teks
+- **HP → Mac**: tempel teks atau pilih gambar (bisa beberapa sekaligus), tekan **Kirim**, lalu ⌘V di Mac.
+  Gambar juga bisa ditempel langsung di kotak teks
 - **Mac → HP**: setiap ⌘C di Mac (teks, screenshot, gambar dari browser, file gambar di Finder)
-  **muncul otomatis** di halaman HP dalam ±1 detik. Tekan **Salin**, atau tekan lama gambar untuk menyalin/menyimpan
-- Jalan di **iPhone & Android** (Safari, Chrome, dll.), bahkan di laptop lain
-- **QR code langsung di menu**: tidak perlu mengetik alamat IP
-- **Riwayat 20 item terakhir** di Mac & HP; klik item di menu Mac untuk menyalinnya lagi
-- Mode **otomatis** atau **manual** ("Kirim clipboard Mac sekarang")
+  **muncul otomatis** di HP dalam ±1 detik. Tekan **Salin** / **Salin gambar**
+- **PWA**: install di iPhone & Android ("Install" / "Tambahkan ke Layar Utama"), tampil seperti aplikasi biasa
+- Bisa dipakai dari **banyak perangkat** sekaligus (HP, tablet, laptop lain); tiap perangkat login sekali
+- **Riwayat 20 item terakhir**; klik item di menu Mac untuk menyalinnya lagi
+- Mode **otomatis** atau **manual** ("Kirim clipboard Mac sekarang") di Mac
 - Opsi menyimpan gambar dari HP ke folder **Unduhan**
-- Ikon ✓ sebentar di menu bar saat menerima sesuatu dari HP
-- Buka saat login, update dari menu, uninstall dari menu
-- Hemat sumber daya: tanpa dependensi, clipboard dicek lewat satu angka (`changeCount`)
+- Buka saat login, update dari menu (bertanda tangan), uninstall dari menu
 
 ## Cara pakai
 
-1. Pastikan Mac dan HP tersambung ke **Wi-Fi yang sama** (atau Mac memakai hotspot HP).
-2. Klik ikon **⇄** di menu bar, lalu scan QR code dengan kamera HP. Halaman PasteLAN terbuka di browser.
-   Simpan sebagai bookmark atau **Tambahkan ke Layar Utama** supaya tidak perlu scan lagi.
-3. **HP → Mac**: tempel teks / pilih gambar, tekan **Kirim ke Mac**, lalu ⌘V di Mac.
-4. **Mac → HP**: copy apa saja di Mac, isinya muncul di halaman HP.
-
-### Izin & jaringan
-
-- Kalau macOS bertanya **"Izinkan PasteLAN menerima koneksi masuk?"**, pilih **Izinkan**.
-  Izin ini tetap berlaku setelah update karena aplikasi ditandatangani dengan identifier tetap.
-- Wi-Fi **kantor / kampus / publik** sering memakai *client isolation* (antar-perangkat tidak bisa saling melihat).
-  Kalau HP tidak bisa membuka halaman, pakai Wi-Fi rumah atau **hotspot HP**.
-- Server memakai port **8787** (otomatis pindah ke 8788, 8789, … kalau sedang dipakai aplikasi lain).
-- **HP tidak bisa membuka halaman?** Lihat baris **"Koneksi masuk terakhir"** di menu PasteLAN setelah mencoba dari HP:
-  - Tidak muncul IP HP → permintaan HP **tidak sampai** ke Mac. Pastikan HP tersambung ke Wi-Fi yang sama dengan Mac
-    (bukan data seluler), atau Wi-Fi-nya memblokir antar-perangkat.
-  - Muncul IP HP dengan keterangan "ditolak" → alasannya juga tampil di browser HP.
-  - Muncul "diterima" tapi tetap gagal → coba **Reset link (putuskan semua HP)…** lalu scan QR code yang baru.
+1. **Pasang server** di VPS Anda (sekali saja), lihat [Server](#server).
+2. **Mac**: klik ikon **⇄** di menu bar → **Atur server & login…** → isi alamat server dan password.
+3. **HP**: scan QR code di menu Mac (atau buka alamat server), login dengan password yang sama, lalu
+   **Install** / **Tambahkan ke Layar Utama**.
+4. **HP → Mac**: tempel teks / pilih gambar, tekan **Kirim**, lalu ⌘V di Mac.
+   **Mac → HP**: copy apa saja di Mac, isinya muncul di HP.
 
 ### Keterbatasan
 
 - Arah HP → Mac selalu butuh satu ketukan (**Kirim**): Android dan iOS tidak mengizinkan web/aplikasi
   membaca clipboard HP secara otomatis.
 - Halaman HP harus terbuka supaya menerima item baru dari Mac (setelah dibuka lagi, item yang terlewat langsung muncul).
-- Tombol **Salin** di HP memakai cara lama (`execCommand`) karena HTTP lokal bukan *secure context*. Gambar
-  disalin dengan **tekan lama** gambar (menu bawaan iOS/Android).
+- Butuh internet di Mac dan HP (lewat server).
 
-## Privasi & keamanan
+## Keamanan
 
-- Semua data hanya lewat **jaringan lokal**. Tidak ada server cloud, tidak ada analitik.
-- **Terenkripsi ujung-ke-ujung**: QR code berisi **kunci acak 256-bit** di bagian `#k=` link (bagian ini tidak
-  pernah dikirim lewat jaringan). Semua teks, gambar, daftar riwayat, dan nama Mac dienkripsi **ChaCha20-Poly1305**
-  (CryptoKit di Mac, JS bawaan halaman di HP). Penyadap di Wi-Fi yang sama hanya melihat ukuran & waktu, tidak bisa
-  membaca isi, memalsukan, atau mengulang request. **Reset link** di menu memutus semua HP yang pernah terhubung.
-- Riwayat **hanya disimpan di memori** dan hilang saat PasteLAN ditutup.
-- Isi dari **password manager** (bertanda `org.nspasteboard.ConcealedType`) **tidak pernah** dikirim ke HP.
-- Hanya perangkat di **jaringan lokal** yang dilayani (koneksi dari VPN / IP publik ditolak). Kunci dicek sebelum
-  isi request dibaca, dan tiap perangkat dibatasi jumlah koneksinya, supaya perangkat lain tidak bisa membebani Mac.
-- Saat pertama kali dibuka, PasteLAN **bertanya** apakah setiap copy di Mac boleh dikirim otomatis ke HP.
-- **Salin link** tidak ikut Universal Clipboard ke perangkat Apple lain dan ditandai rahasia untuk clipboard manager.
-- Batasan: halamannya sendiri tetap dimuat lewat HTTP. Penyerang **aktif** di Wi-Fi yang sama (mis. ARP spoofing)
-  secara teori bisa mengganti halaman itu untuk mencuri kunci. Di Wi-Fi publik yang tidak dipercaya, lebih aman
-  memakai hotspot HP sendiri, dan tekan **Reset link** kalau ragu.
-- **Update otomatis** hanya dipasang kalau file rilis cocok dengan tanda tangan Ed25519 pemilik repo
-  (lihat [Rilis](#rilis)). Kalau tidak, PasteLAN hanya membuka halaman rilis.
-- Matikan **Berbagi aktif** di menu kapan saja untuk menutup port.
+- **HTTPS** wajib (Caddy / Let's Encrypt). Server sendiri hanya mendengarkan `127.0.0.1`.
+- **Password + token per perangkat**: password hanya dipakai sekali saat login. Setiap perangkat mendapat token acak
+  256-bit sendiri; server hanya menyimpan **hash**-nya. Perangkat yang hilang bisa **dicabut** dari
+  Pengaturan di halaman PasteLAN (atau "Keluar" di perangkat itu).
+  - Browser: token di cookie `HttpOnly` + `Secure` + `SameSite=Strict` (tidak bisa dibaca JavaScript).
+  - Mac: token di **Keychain**.
+- **Batas percobaan login**: 5× salah dari satu IP → IP itu dikunci 15 menit; 100× salah per jam dari semua IP →
+  login baru ditutup 15 menit (perangkat yang sudah login tetap jalan).
+- **Isi clipboard hanya di memori server**: maks 20 item / 150 MB, kedaluwarsa **24 jam**, hilang saat server
+  restart. Tidak pernah ditulis ke disk atau log. Pemilik server (Anda) secara teknis bisa melihat isinya.
+- **Halaman web ketat**: Content-Security-Policy tanpa script inline / CDN, `X-Frame-Options: DENY`, `nosniff`,
+  HSTS. Isi clipboard selalu ditampilkan sebagai teks (bukan HTML). Gambar dicek dari isinya
+  (PNG/JPEG/GIF/WebP/HEIC; SVG ditolak).
+- Semua request API wajib header `X-PasteLAN` (perlindungan CSRF, selain cookie `SameSite=Strict`).
+- Isi dari **password manager** (bertanda `org.nspasteboard.ConcealedType`) **tidak pernah** dikirim dari Mac.
+- **Update otomatis** aplikasi Mac hanya dipasang kalau cocok dengan tanda tangan Ed25519 pemilik repo
+  (lihat [Rilis](#rilis)).
 
-## Instal
+## Server
+
+Satu binary Go tanpa dependensi (halaman web ikut di dalamnya). Panduan lengkap: [`server/README.md`](server/README.md).
+
+```bash
+# di VPS (Linux): unduh pastelan-server-linux-amd64 (atau -arm64) dari Releases
+sudo install -m 755 pastelan-server-linux-amd64 /usr/local/bin/pastelan-server
+echo "PASTELAN_PASSWORD=$(openssl rand -base64 24)" | sudo tee /etc/pastelan.env && sudo chmod 600 /etc/pastelan.env
+sudo cp server/deploy/pastelan.service /etc/systemd/system/ && sudo systemctl enable --now pastelan
+# HTTPS: pasang Caddy, salin server/deploy/Caddyfile (ganti domain), lalu: sudo systemctl reload caddy
+```
+
+## Instal aplikasi Mac
 
 Unduh dari [Releases](https://github.com/kikiraihan/mac-os-PasteLAN/releases/latest):
 
@@ -90,7 +87,8 @@ Unduh dari [Releases](https://github.com/kikiraihan/mac-os-PasteLAN/releases/lat
 - **`install-PasteLAN.zip`**: ekstrak, lalu jalankan `bash install-PasteLAN.command`
   (compile di Mac Anda, butuh Xcode Command Line Tools).
 
-Butuh **macOS 13 (Ventura)** atau lebih baru.
+Butuh **macOS 13 (Ventura)** atau lebih baru. Pengguna versi lama (0.x, mode Wi-Fi lokal): setelah update,
+PasteLAN meminta alamat server sekali.
 
 ## Build sendiri
 
@@ -98,25 +96,26 @@ Butuh **macOS 13 (Ventura)** atau lebih baru.
 xcode-select --install   # sekali saja
 ./scripts/build.sh       # hasil: build/PasteLAN.app
 cp -R build/PasteLAN.app /Applications/ && open /Applications/PasteLAN.app
+
+cd server && go test ./... && go build -o pastelan-server .   # server (Go 1.22+)
 ```
 
 ## Cara kerja (singkat)
 
 | Bagian | Teknologi |
 |---|---|
-| Server HTTP | `NWListener` (Network.framework), parser HTTP/1.1 minimal |
-| Mac → HP real-time | Long-polling (`GET /api/items?wait=1`, ditahan maks 25 detik) |
-| Enkripsi | ChaCha20-Poly1305: header `X-Auth` sekali pakai + isi & jawaban terenkripsi, kunci di `#k=` |
-| Pantau clipboard | `NSPasteboard.changeCount` tiap 0,8 detik |
-| QR code | CoreImage `CIQRCodeGenerator` |
-| Halaman HP | HTML/CSS/JS ditanam di aplikasi, tanpa CDN (jalan tanpa internet) |
+| Server | Go `net/http` (standard library saja), satu binary, halaman web di-`embed` |
+| Real-time | Long-polling (`GET /api/items?wait=1`, ditahan maks 25 detik) |
+| Login | Password → token per perangkat (hash SHA-256 di `devices.json`), cookie / Bearer |
+| Halaman HP | HTML/CSS/JS biasa (tanpa framework / CDN) + service worker & manifest (PWA) |
+| Aplikasi Mac | Swift + AppKit, `URLSession`, token di Keychain, `NSPasteboard.changeCount` tiap 0,8 detik |
 
-Rencana pengembangan ada di [`_todo/`](_todo/), ide lanjutan (aplikasi native di HP) di [`_techdebt/`](_techdebt/).
+Rencana pengembangan ada di [`_todo/`](_todo/), catatan keamanan & ide lanjutan di [`_techdebt/`](_techdebt/).
 
 ## Rilis
 
 Versi diatur di `Resources/Info.plist` (lihat [AGENTS.md](AGENTS.md)). Merge ke `main` dengan versi yang belum
-punya tag akan otomatis membuat tag `v<versi>` dan rilis lewat GitHub Actions.
+punya tag akan otomatis membuat tag `v<versi>` dan rilis lewat GitHub Actions (aplikasi Mac + binary server Linux).
 
 ### Tanda tangan rilis (auto-update)
 
