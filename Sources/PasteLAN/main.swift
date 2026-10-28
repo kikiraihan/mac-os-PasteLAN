@@ -359,12 +359,12 @@ final class HTTPConnection {
 
     static let reasons = [200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed",
                           411: "Length Required", 413: "Payload Too Large", 415: "Unsupported Media Type",
-                          431: "Request Header Fields Too Large", 500: "Internal Server Error"]
+                          431: "Request Header Fields Too Large", 500: "Internal Server Error", 503: "Service Unavailable"]
 
     init(_ c: NWConnection, maxBody: Int) {
         conn = c
         self.maxBody = maxBody
-        if case let .hostPort(h, _) = c.endpoint { host = "\(h)" } else { host = "\(c.endpoint)" }
+        host = HTTPServer.peerHost(c.endpoint)
     }
 
     /// Masih menunggu jawaban (mis. long-poll yang sedang ditahan)
@@ -544,15 +544,45 @@ final class HTTPServer {
 
     private func accept(_ nc: NWConnection) {
         // hanya perangkat di jaringan lokal (bukan VPN / IP publik), dan satu perangkat tidak boleh memborong slot
-        guard HTTPServer.isLocalPeer(nc.endpoint), conns.count < maxConnections else { return nc.cancel() }
+        guard HTTPServer.isLocalPeer(nc.endpoint) else {
+            return refuse(nc, 403, "PasteLAN hanya melayani perangkat di jaringan lokal yang sama dengan Mac. " +
+                          "Alamat perangkat ini (\(HTTPServer.peerHost(nc.endpoint))) tidak dikenali sebagai alamat lokal.")
+        }
+        guard conns.count < maxConnections else { return refuse(nc, 503, "PasteLAN sedang sibuk, coba lagi sebentar.") }
         let c = HTTPConnection(nc, maxBody: maxBody)
-        guard conns.values.filter({ $0.host == c.host }).count < maxPerHost else { return nc.cancel() }
+        guard conns.values.filter({ $0.host == c.host }).count < maxPerHost else {
+            return refuse(nc, 503, "Terlalu banyak koneksi dari perangkat ini, coba lagi sebentar.")
+        }
         let key = ObjectIdentifier(c)
         conns[key] = c
         c.gate = { [weak self] m, p, h in self?.gate(m, p, h) ?? .reject(status: 403, json: ["error": "key"]) }
         c.onRequest = { [weak self] req, c in self?.handler?(req, c) }
         c.onClose = { [weak self] in self?.conns[key] = nil }
         c.start()
+    }
+
+    /// Tolak dengan jawaban singkat, bukan memutus diam-diam: browser menampilkan alasannya
+    /// (koneksi yang diputus tanpa jawaban dicoba ulang browser lalu gagal dengan ERR_TOO_MANY_RETRIES).
+    /// Alasan juga dicatat di Console.app (cari "PasteLAN").
+    private func refuse(_ nc: NWConnection, _ status: Int, _ msg: String) {
+        NSLog("PasteLAN: tolak %@ (%d): %@", HTTPServer.peerHost(nc.endpoint), status, msg)
+        let body = Data(msg.utf8)
+        let head = "HTTP/1.1 \(status) \(HTTPConnection.reasons[status] ?? "Error")\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+            "Content-Length: \(body.count)\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
+        nc.start(queue: .main)
+        // baca dulu request-nya: menutup socket yang masih berisi data belum dibaca mengirim RST → jawaban bisa hilang
+        nc.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { _, _, _, _ in
+            nc.send(content: Data(head.utf8) + body, contentContext: .finalMessage, isComplete: true,
+                    completion: .contentProcessed { _ in nc.cancel() })
+        }
+        // klien yang tidak membaca jawaban tetap diputus
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { nc.cancel() }
+    }
+
+    /// IP pengirim tanpa port (untuk pesan & batas per perangkat)
+    static func peerHost(_ ep: NWEndpoint) -> String {
+        if case let .hostPort(h, _) = ep { return "\(h)" }
+        return "\(ep)"
     }
 
     /// IP pribadi (10/8, 172.16/12, 192.168/16), satu subnet dengan Mac, link-local, loopback,
