@@ -34,6 +34,8 @@ func (a *app) routes(web fs.FS) http.Handler {
 	mux.Handle("GET /", http.FileServerFS(web))
 	mux.HandleFunc("POST /api/login", a.login)
 	mux.HandleFunc("POST /api/logout", a.authed(a.logout))
+	mux.HandleFunc("POST /api/pair", a.authed(a.newPair))
+	mux.HandleFunc("POST /api/pair/claim", a.claimPair)
 	mux.HandleFunc("GET /api/items", a.authed(a.items))
 	mux.HandleFunc("DELETE /api/items", a.authed(a.clearItems))
 	mux.HandleFunc("POST /api/text", a.authed(a.postText))
@@ -143,11 +145,32 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token, d, err := a.auth.login(clientIP(r), req.Password, req.Name)
+	a.loginResult(w, token, d, err)
+}
+
+// newPair: perangkat yang sudah login (Mac) meminta kode QR untuk menambah perangkat baru
+func (a *app) newPair(w http.ResponseWriter, r *http.Request, d *device) {
+	code, exp := a.auth.newPair()
+	writeJSON(w, http.StatusOK, map[string]any{"code": code, "expires": exp.UnixMilli()})
+}
+
+// claimPair: perangkat baru (HP yang scan QR) menukar kode dengan token sendiri
+func (a *app) claimPair(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Code, Name string }
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "format salah")
+		return
+	}
+	token, d, err := a.auth.claimPair(clientIP(r), req.Code, req.Name)
+	a.loginResult(w, token, d, err)
+}
+
+func (a *app) loginResult(w http.ResponseWriter, token string, d *device, err error) {
 	switch {
 	case errors.Is(err, errLocked):
 		w.Header().Set("Retry-After", strconv.Itoa(int(ipLockout.Seconds())))
 		jsonError(w, http.StatusTooManyRequests, err.Error())
-	case errors.Is(err, errBadPassword):
+	case errors.Is(err, errBadPassword), errors.Is(err, errBadPair):
 		jsonError(w, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, errTooMany):
 		jsonError(w, http.StatusConflict, err.Error())

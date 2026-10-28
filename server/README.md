@@ -47,6 +47,8 @@ Semua request `/api/` wajib header `X-PasteLAN: 1`. Login: cookie `pl_token` (br
 |---|---|
 | `POST /api/login` `{"password","name"}` | → `{"token","device"}` + cookie |
 | `POST /api/logout` | Cabut token perangkat ini |
+| `POST /api/pair` | (sudah login) → `{"code","expires"}`: kode QR sekali pakai, 5 menit |
+| `POST /api/pair/claim` `{"code","name"}` | Tukar kode QR → `{"token","device"}` + cookie (seperti login) |
 | `GET /api/items?after=&s=&wait=1` | Item baru (long-poll maks 25 detik) |
 | `POST /api/text` | Body: teks UTF-8 (maks 2 MB) |
 | `POST /api/image` | Body: file gambar (maks 30 MB; jenis dicek dari isi) |

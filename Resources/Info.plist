@@ -7,10 +7,11 @@
     <key>CFBundleIdentifier</key><string>id.local.pastelan</string>
     <key>CFBundleExecutable</key><string>PasteLAN</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0.0</string>
-    <key>CFBundleVersion</key><string>7</string>
+    <key>CFBundleShortVersionString</key><string>1.1.0</string>
+    <key>CFBundleVersion</key><string>8</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSLocalNetworkUsageDescription</key><string>Metode Wi-Fi lokal: PasteLAN membuka server kecil di jaringan lokal supaya HP di Wi-Fi yang sama bisa bertukar teks &amp; gambar dengan Mac ini.</string>
 </dict>
 </plist>

@@ -308,3 +308,64 @@ func TestStoreLimits(t *testing.T) {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+func claim(t *testing.T, ts *httptest.Server, code, name string) (int, string, *http.Response) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"code": code, "name": name})
+	res, b := do(t, ts, "POST", "/api/pair/claim", "", bytes.NewReader(body), nil)
+	var j struct{ Token string }
+	_ = json.Unmarshal(b, &j)
+	return res.StatusCode, j.Token, res
+}
+
+func TestPairing(t *testing.T) {
+	ts, _ := newTestServer(t)
+	if res, _ := do(t, ts, "POST", "/api/pair", "", nil, nil); res.StatusCode != 401 {
+		t.Fatalf("kode QR tanpa login: %d", res.StatusCode)
+	}
+	_, mac, _ := login(t, ts, testPassword, "Mac")
+	_, b := do(t, ts, "POST", "/api/pair", mac, nil, nil)
+	var p struct {
+		Code    string
+		Expires int64
+	}
+	_ = json.Unmarshal(b, &p)
+	if len(p.Code) < 40 || time.UnixMilli(p.Expires).Sub(time.Now()) > pairTTL {
+		t.Fatalf("kode pairing: %s", b)
+	}
+	code, token, res := claim(t, ts, p.Code, "HP scan")
+	if code != 200 || token == "" || len(res.Cookies()) != 1 || !res.Cookies()[0].HttpOnly {
+		t.Fatalf("klaim: %d", code)
+	}
+	if res, _ := do(t, ts, "GET", "/api/items", token, nil, nil); res.StatusCode != 200 {
+		t.Fatalf("token dari QR: %d", res.StatusCode)
+	}
+	if code, _, _ := claim(t, ts, p.Code, "HP lain"); code != 401 {
+		t.Fatalf("kode dipakai dua kali: %d", code)
+	}
+}
+
+func TestPairingExpiredAndGuessing(t *testing.T) {
+	a, _ := newAuth(testPassword, filepath.Join(t.TempDir(), "d.json"))
+	c, _ := a.newPair()
+	a.mu.Lock()
+	a.pairs[hashToken(c)] = time.Now().Add(-time.Second)
+	a.mu.Unlock()
+	if _, _, err := a.claimPair("192.0.2.1", c, "x"); err != errBadPair {
+		t.Fatalf("kode kedaluwarsa: %v", err)
+	}
+	// kode tebakan dihitung seperti password salah → IP terkunci
+	for i := 0; i < maxFailsPerIP; i++ {
+		a.claimPair("192.0.2.9", "tebakan", "x")
+	}
+	good, _ := a.newPair()
+	if _, _, err := a.claimPair("192.0.2.9", good, "x"); err != errLocked {
+		t.Fatalf("setelah banyak tebakan: %v", err)
+	}
+	for i := 0; i < maxPairCodes+5; i++ {
+		a.newPair()
+	}
+	if len(a.pairs) > maxPairCodes {
+		t.Fatalf("kode aktif tidak dibatasi: %d", len(a.pairs))
+	}
+}

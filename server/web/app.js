@@ -32,7 +32,7 @@
     opts.headers = Object.assign({ 'X-PasteLAN': '1' }, opts.headers || {});
     opts.credentials = 'same-origin';
     const r = await fetch(path, opts);
-    if (r.status === 401 && path !== '/api/login') { showLogin(); throw new Error('belum login'); }
+    if (r.status === 401 && path !== '/api/login' && path !== '/api/pair/claim') { showLogin(); throw new Error('belum login'); }
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
       throw new Error(j.error || ('HTTP ' + r.status));
@@ -259,6 +259,29 @@
     showLogin();
   };
 
+  // QR dari menu Mac: https://server/#pair=<kode> → masuk tanpa mengetik password (kode sekali pakai, 5 menit)
+  async function claimFromQR() {
+    const code = new URLSearchParams(location.hash.slice(1)).get('pair');
+    if (!code) return true;
+    history.replaceState(null, '', location.pathname); // kode tidak tertinggal di riwayat / layar
+    let name = guessName();
+    try { name = localStorage.getItem('pastelan-name') || name; } catch (e) {}
+    try {
+      const j = await api('/api/pair/claim', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, name })
+      });
+      me = j.device.id;
+      toast('Perangkat ini sudah masuk ✓');
+      return true;
+    } catch (err) {
+      showLogin();
+      $('loginErr').textContent = err.message;
+      return false;
+    }
+  }
+
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-  showApp(); // belum login → request pertama dijawab 401 → form login muncul
+  // belum login → request pertama dijawab 401 → form login muncul
+  claimFromQR().then(ok => { if (ok) showApp(); });
 })();

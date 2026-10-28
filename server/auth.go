@@ -23,12 +23,15 @@ const (
 	ipLockout      = 15 * time.Minute // … → IP itu dikunci sementara
 	maxFailsGlobal = 100              // total salah password per jam dari semua IP …
 	globalLockout  = 15 * time.Minute // … → login baru ditutup sementara (perangkat yang sudah login tetap jalan)
+	pairTTL        = 5 * time.Minute  // kode QR pairing berlaku 5 menit, sekali pakai
+	maxPairCodes   = 10
 )
 
 var (
 	errBadPassword = errors.New("password salah")
 	errLocked      = errors.New("terlalu banyak percobaan, coba lagi nanti")
 	errTooMany     = errors.New("terlalu banyak perangkat, cabut perangkat lama dulu")
+	errBadPair     = errors.New("kode QR tidak berlaku (kedaluwarsa / sudah dipakai), minta QR baru atau masuk dengan password")
 )
 
 // device = satu perangkat yang sudah login. Token aslinya hanya dikirim sekali ke perangkat;
@@ -51,7 +54,8 @@ type auth struct {
 	mu        sync.Mutex
 	pwHash    [32]byte
 	file      string
-	devices   map[string]*device // kunci: hash token
+	devices   map[string]*device   // kunci: hash token
+	pairs     map[string]time.Time // hash kode pairing → kedaluwarsa (hanya di memori)
 	fails     map[string]*failInfo
 	globalLog []time.Time // waktu salah password (1 jam terakhir)
 	globalTil time.Time
@@ -59,7 +63,7 @@ type auth struct {
 
 func newAuth(password, file string) (*auth, error) {
 	a := &auth{pwHash: sha256.Sum256([]byte(password)), file: file,
-		devices: map[string]*device{}, fails: map[string]*failInfo{}}
+		devices: map[string]*device{}, fails: map[string]*failInfo{}, pairs: map[string]time.Time{}}
 	b, err := os.ReadFile(file)
 	if errors.Is(err, os.ErrNotExist) {
 		return a, nil
@@ -121,10 +125,7 @@ func (a *auth) login(ip, password, name string) (string, *device, error) {
 	defer a.mu.Unlock()
 	now := time.Now()
 	key := limitKey(ip)
-	if now.Before(a.globalTil) {
-		return "", nil, errLocked
-	}
-	if f := a.fails[key]; f != nil && now.Before(f.until) {
+	if a.locked(key, now) {
 		return "", nil, errLocked
 	}
 	h := sha256.Sum256([]byte(password))
@@ -133,6 +134,67 @@ func (a *auth) login(ip, password, name string) (string, *device, error) {
 		return "", nil, errBadPassword
 	}
 	delete(a.fails, key)
+	return a.newDevice(name, now)
+}
+
+// newPair membuat kode pairing sekali pakai (untuk QR di Mac): perangkat baru bisa login tanpa mengetik password.
+// Server hanya menyimpan hash kodenya.
+func (a *auth) newPair() (string, time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	for h, exp := range a.pairs {
+		if now.After(exp) {
+			delete(a.pairs, h)
+		}
+	}
+	for len(a.pairs) >= maxPairCodes { // buang yang paling cepat kedaluwarsa
+		var oldest string
+		for h, exp := range a.pairs {
+			if oldest == "" || exp.Before(a.pairs[oldest]) {
+				oldest = h
+			}
+		}
+		delete(a.pairs, oldest)
+	}
+	code := randomString(32)
+	exp := now.Add(pairTTL)
+	a.pairs[hashToken(code)] = exp
+	return code, exp
+}
+
+// claimPair menukar kode pairing dengan token perangkat baru. Kode salah dihitung seperti password salah.
+func (a *auth) claimPair(ip, code, name string) (string, *device, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	key := limitKey(ip)
+	if a.locked(key, now) {
+		return "", nil, errLocked
+	}
+	h := hashToken(code)
+	exp, ok := a.pairs[h]
+	if !ok || now.After(exp) {
+		delete(a.pairs, h)
+		a.recordFail(key, now)
+		return "", nil, errBadPair
+	}
+	delete(a.pairs, h) // sekali pakai
+	delete(a.fails, key)
+	return a.newDevice(name, now)
+}
+
+// locked: IP ini / semua login baru sedang dikunci (dipanggil dengan a.mu terkunci)
+func (a *auth) locked(key string, now time.Time) bool {
+	if now.Before(a.globalTil) {
+		return true
+	}
+	f := a.fails[key]
+	return f != nil && now.Before(f.until)
+}
+
+// newDevice membuat token baru untuk perangkat (dipanggil dengan a.mu terkunci)
+func (a *auth) newDevice(name string, now time.Time) (string, *device, error) {
 	if len(a.devices) >= maxDevices {
 		return "", nil, errTooMany
 	}

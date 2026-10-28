@@ -14,7 +14,7 @@ sebagai aplikasi. Opsi A tetap terdokumentasi di `../opsi-a-mac-app-plus-browser
 | Login | Satu password → token per perangkat (hash di disk), bisa dicabut | Sederhana, perangkat hilang mudah diputus |
 | Isi clipboard | Hanya di memori server: 20 item / 150 MB / 24 jam | Tidak ada isi yang tersimpan di disk |
 | Enkripsi | HTTPS saja (tanpa E2E) | Dipilih pemilik: simpel; pemilik server dipercaya |
-| Mode LAN | Dihapus | Satu jalur, kode jauh lebih kecil |
+| Mode LAN | v1.0.0: dihapus. **v1.1.0: kembali sebagai metode opsional** (default server) | Permintaan pemilik: tetap bisa dipakai tanpa server |
 
 ## Tugas
 
@@ -24,5 +24,8 @@ sebagai aplikasi. Opsi A tetap terdokumentasi di `../opsi-a-mac-app-plus-browser
 - [x] Aplikasi Mac jadi klien server: token di Keychain, mode LAN & enkripsi JS dihapus
 - [x] Tes: `go test -race`, E2E Chromium (server asli), klien Swift ⇄ server (Linux)
 - [x] CI: tes Go + binary server Linux (amd64/arm64) ikut rilis; deploy systemd + Caddy
+- [x] v1.1.0: metode Wi-Fi lokal opsional (menu → Metode), kode v0.3.0 dipulihkan sebagai `LANServer`
+- [x] v1.1.0: "Tambah HP (scan QR)…" di Mac → HP masuk tanpa password (kode sekali pakai, 5 menit)
 - [ ] Uji di Mac & HP nyata: login, install PWA, kirim dua arah, cabut perangkat
+- [ ] Uji metode Wi-Fi lokal di Mac nyata & ganti-ganti metode
 - [ ] Pasang server di VPS pemilik
