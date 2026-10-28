@@ -32,8 +32,12 @@ Merge ke `main` dengan versi yang belum punya tag akan otomatis membuat tag `v<v
 ## Struktur & catatan proyek
 
 - Dua komponen, keduanya tanpa dependensi:
-  - Aplikasi Mac: satu file `Sources/PasteLAN/main.swift` (Swift + AppKit), klien server PasteLAN
-    (`PasteServer`, hanya Foundation), token di Keychain.
+  - Aplikasi Mac: satu file `Sources/PasteLAN/main.swift` (Swift + AppKit). Dua metode, dipilih di menu
+    (`mode` di UserDefaults, default `server`; hanya satu yang jalan):
+    - Server: klien `PasteServer` (hanya Foundation), token di Keychain.
+    - Wi-Fi lokal: `LANServer` + `HTTPServer` (Network.framework) + halaman HP `enum Page`. Isi `/api/` dienkripsi
+      ChaCha20-Poly1305 (Swift `CryptoKit` ⇄ JS `AEAD` di `enum Page`, format `nonce + ciphertext + tag`,
+      AAD `PL1|req|…`, `PL1|body|…`, `PL1|resp|…`). Ubah format di kedua sisi sekaligus.
   - Server: `server/` (Go, standard library saja). Halaman web / PWA di `server/web/` (HTML/CSS/JS biasa,
     tanpa framework / CDN, di-`embed` ke binary). Cek: `cd server && gofmt -l . && go vet ./... && go test -race ./...`.
 - Versi di `Resources/Info.plist` berlaku untuk keduanya (satu rilis = aplikasi Mac + binary server).

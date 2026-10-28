@@ -4,6 +4,9 @@ Berbagi **copy-paste teks & gambar** antara Mac dan HP lewat **server PasteLAN m
 Ringan dan sederhana: aplikasi menu bar macOS (Swift, satu file) + server kecil (Go, satu binary, tanpa dependensi)
 + halaman web yang bisa di-**install sebagai aplikasi (PWA)** di HP. Mac dan HP **tidak perlu di Wi-Fi yang sama**.
 
+Tidak punya server? Pilih metode **Wi-Fi lokal** di menu: Mac menjalankan server kecil sendiri, HP di jaringan yang
+sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
+
 ```
  ┌──────── Mac ────────┐            ┌──── Server Anda ────┐            ┌──── HP (PWA) ────────────┐
  │  ⌘C  ───────────────┼── HTTPS ──▶│  isi hanya di RAM,  │── HTTPS ──▶│  muncul otomatis → Salin │
@@ -38,12 +41,32 @@ Ringan dan sederhana: aplikasi menu bar macOS (Swift, satu file) + server kecil 
 4. **HP → Mac**: tempel teks / pilih gambar, tekan **Kirim**, lalu ⌘V di Mac.
    **Mac → HP**: copy apa saja di Mac, isinya muncul di HP.
 
+## Dua metode
+
+Pilih di menu **⇄ → Metode**. Hanya satu yang aktif; metode yang tidak dipakai dimatikan penuh.
+
+| | **Server PasteLAN** (default) | **Wi-Fi lokal** (tanpa server) |
+|---|---|---|
+| Butuh | Server sendiri (VPS + domain) | Mac & HP di Wi-Fi yang sama (atau Mac memakai hotspot HP) |
+| Jarak | Di mana saja (internet) | Satu jaringan |
+| HP | PWA, bisa di-install; **Salin gambar** | Halaman web dari Mac (HTTP lokal); salin gambar dengan tekan lama |
+| Masuk | Password sekali per perangkat → token | Scan QR (kunci 256-bit di link) |
+| Keamanan | HTTPS | Isi dienkripsi ChaCha20-Poly1305 dengan kunci di QR |
+
+Mode Wi-Fi lokal:
+- Kalau macOS bertanya **"Izinkan PasteLAN menerima koneksi masuk?"**, pilih **Izinkan**.
+- Wi-Fi **kantor / kampus / publik** sering memblokir antar-perangkat, dan HP yang memakai data seluler tidak bisa
+  menjangkau Mac. Lihat baris **"Koneksi masuk terakhir"** di menu: kalau tidak muncul IP HP, permintaannya tidak
+  sampai ke Mac. Pakai Wi-Fi rumah / hotspot HP, atau metode server.
+- **Reset link (putuskan semua HP)…** mengganti kunci dan memulai ulang server lokal. Port **8787**
+  (otomatis pindah ke 8788, … kalau dipakai aplikasi lain).
+
 ### Keterbatasan
 
 - Arah HP → Mac selalu butuh satu ketukan (**Kirim**): Android dan iOS tidak mengizinkan web/aplikasi
   membaca clipboard HP secara otomatis.
 - Halaman HP harus terbuka supaya menerima item baru dari Mac (setelah dibuka lagi, item yang terlewat langsung muncul).
-- Butuh internet di Mac dan HP (lewat server).
+- Metode server butuh internet di Mac dan HP.
 
 ## Keamanan
 
@@ -64,6 +87,10 @@ Ringan dan sederhana: aplikasi menu bar macOS (Swift, satu file) + server kecil 
 - Isi dari **password manager** (bertanda `org.nspasteboard.ConcealedType`) **tidak pernah** dikirim dari Mac.
 - **Update otomatis** aplikasi Mac hanya dipasang kalau cocok dengan tanda tangan Ed25519 pemilik repo
   (lihat [Rilis](#rilis)).
+- **Metode Wi-Fi lokal**: hanya perangkat di jaringan lokal yang dilayani; kunci dicek sebelum isi request dibaca;
+  header `X-Auth` sekali pakai (anti replay); batas koneksi per perangkat. Batasan: halamannya dimuat lewat HTTP,
+  jadi penyerang **aktif** di Wi-Fi yang sama (mis. ARP spoofing) secara teori bisa mencuri kunci. Di Wi-Fi yang
+  tidak dipercaya, pakai metode server atau hotspot HP sendiri.
 
 ## Server
 
@@ -87,8 +114,8 @@ Unduh dari [Releases](https://github.com/kikiraihan/mac-os-PasteLAN/releases/lat
 - **`install-PasteLAN.zip`**: ekstrak, lalu jalankan `bash install-PasteLAN.command`
   (compile di Mac Anda, butuh Xcode Command Line Tools).
 
-Butuh **macOS 13 (Ventura)** atau lebih baru. Pengguna versi lama (0.x, mode Wi-Fi lokal): setelah update,
-PasteLAN meminta alamat server sekali.
+Butuh **macOS 13 (Ventura)** atau lebih baru. Pengguna versi lama (0.x): setelah update, PasteLAN meminta alamat
+server sekali; pilih **Pakai Wi-Fi lokal saja** untuk tetap tanpa server.
 
 ## Build sendiri
 
@@ -109,6 +136,7 @@ cd server && go test ./... && go build -o pastelan-server .   # server (Go 1.22+
 | Login | Password → token per perangkat (hash SHA-256 di `devices.json`), cookie / Bearer |
 | Halaman HP | HTML/CSS/JS biasa (tanpa framework / CDN) + service worker & manifest (PWA) |
 | Aplikasi Mac | Swift + AppKit, `URLSession`, token di Keychain, `NSPasteboard.changeCount` tiap 0,8 detik |
+| Wi-Fi lokal | Server HTTP di Mac (`NWListener`), halaman HP ditanam di aplikasi, ChaCha20-Poly1305 (CryptoKit ⇄ JS) |
 
 Rencana pengembangan ada di [`_todo/`](_todo/), catatan keamanan & ide lanjutan di [`_techdebt/`](_techdebt/).
 

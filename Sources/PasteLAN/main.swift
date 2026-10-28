@@ -8,12 +8,34 @@
 import Cocoa
 import CryptoKit
 import ImageIO
+import Network
 import CoreImage
 import Security
 import SystemConfiguration
 import ServiceManagement
 
 // MARK: - Utilitas
+
+func json(_ obj: Any) -> Data {
+    (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
+}
+
+/// 16 byte acak (SystemRandomNumberGenerator = kriptografis) → 32 karakter hex
+func randomHex(_ bytes: Int = 16) -> String {
+    (0..<bytes).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+}
+
+/// Base64 versi URL (tanpa + / =) → aman ditaruh di link & header
+func b64url(_ d: Data) -> String {
+    d.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+}
+
+func fromB64url(_ s: String) -> Data? {
+    var b = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+    while b.count % 4 != 0 { b += "=" }
+    return Data(base64Encoded: b)
+}
 
 func symbol(_ name: String) -> NSImage? {
     let img = NSImage(systemSymbolName: name, accessibilityDescription: "PasteLAN")
@@ -424,6 +446,1023 @@ final class PasteServer {
     }
 }
 
+// MARK: - IP lokal
+
+/// Interface yang bukan jaringan lokal (VPN, AirDrop, loopback, tunnel)
+let skippedInterfaces = ["utun", "ipsec", "awdl", "llw", "lo", "gif", "stf"]
+
+/// Subnet IPv4 interface lokal Mac (host byte order) → HP di LAN ber-IP non-pribadi tetap dikenali sebagai lokal
+func localSubnets() -> [(net: UInt32, mask: UInt32)] {
+    var ifaddr: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return [] }
+    defer { freeifaddrs(ifaddr) }
+    func ipv4(_ sa: UnsafeMutablePointer<sockaddr>) -> UInt32 {
+        sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+    }
+    var out: [(net: UInt32, mask: UInt32)] = []
+    for p in sequence(first: first, next: { $0.pointee.ifa_next }) {
+        let flags = p.pointee.ifa_flags
+        guard let sa = p.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET), let nm = p.pointee.ifa_netmask,
+              flags & UInt32(IFF_UP) != 0, flags & UInt32(IFF_LOOPBACK) == 0 else { continue }
+        let name = String(cString: p.pointee.ifa_name)
+        if skippedInterfaces.contains(where: { name.hasPrefix($0) }) { continue }
+        let mask = ipv4(nm)
+        if mask != 0 { out.append((ipv4(sa) & mask, mask)) }
+    }
+    return out
+}
+
+/// Alamat IPv4 Mac di jaringan lokal. Utamakan Wi-Fi / Ethernet (en*), lalu Internet Sharing (bridge*);
+/// VPN (utun, ipsec), AirDrop (awdl, llw), loopback & link-local (169.254.x.x) diabaikan.
+func localIPv4() -> String? {
+    var ifaddr: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+    defer { freeifaddrs(ifaddr) }
+    var found: [(rank: Int, ip: String)] = []
+    for p in sequence(first: first, next: { $0.pointee.ifa_next }) {
+        let flags = p.pointee.ifa_flags
+        guard let sa = p.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET),
+              flags & UInt32(IFF_UP) != 0, flags & UInt32(IFF_LOOPBACK) == 0 else { continue }
+        let name = String(cString: p.pointee.ifa_name)
+        if skippedInterfaces.contains(where: { name.hasPrefix($0) }) { continue }
+        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        guard getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
+        let ip = String(cString: host)
+        if ip.hasPrefix("169.254.") { continue }
+        let isPrivate = ip.hasPrefix("192.168.") || ip.hasPrefix("10.")
+            || (ip.hasPrefix("172.") && (16...31).contains(Int(ip.split(separator: ".")[1]) ?? 0))
+        var rank = name.hasPrefix("en") ? 0 : name.hasPrefix("bridge") ? 2 : 4
+        if !isPrivate { rank += 1 }
+        found.append((rank, ip))
+    }
+    return found.min { $0.rank < $1.rank }?.ip
+}
+
+// MARK: - Wi-Fi lokal: riwayat clipboard (hanya di memori, tidak pernah ditulis ke disk)
+
+struct LANClip {
+    let id: Int
+    let kind: String     // "text" / "image"
+    let from: String     // "mac" / "phone"
+    let text: String?
+    let data: Data?      // isi gambar
+    let mime: String?
+    let time: Date
+
+    var size: Int { data?.count ?? text?.utf8.count ?? 0 }
+
+    /// Untuk JSON di halaman HP (isi gambar diambil terpisah lewat /api/image/<id>)
+    var info: [String: Any] {
+        var d: [String: Any] = ["id": id, "kind": kind, "from": from, "time": Int(time.timeIntervalSince1970 * 1000), "size": size]
+        if let text { d["text"] = text }
+        if let mime { d["mime"] = mime }
+        return d
+    }
+
+    /// Cuplikan satu baris untuk submenu Riwayat
+    var title: String {
+        let icon = from == "mac" ? "💻" : "📱"
+        if kind == "image" { return "\(icon)  🖼 Gambar \(fileExt(mime).uppercased()), \(byteString(size))" }
+        var line = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: .newlines).first ?? ""
+        if line.count > 40 { line = String(line.prefix(40)) + "…" }
+        return "\(icon)  \(line.isEmpty ? "(spasi kosong)" : line)"
+    }
+}
+
+final class LANStore {
+    private(set) var items: [LANClip] = [] // terlama di depan, terbaru di belakang
+    private(set) var session = randomHex(8) // berubah saat riwayat dihapus → HP mengosongkan daftarnya
+    private var nextID = 1
+    let maxItems = 20
+    let maxImageBytes = 150 * 1024 * 1024
+    var onAdd: ((LANClip) -> Void)?
+
+    @discardableResult
+    func add(kind: String, from: String, text: String? = nil, data: Data? = nil, mime: String? = nil) -> LANClip {
+        // copy isi yang sama dua kali berturut-turut → tidak perlu item baru
+        if let last = items.last, last.from == from, last.kind == kind, last.text == text, last.data == data { return last }
+        let c = LANClip(id: nextID, kind: kind, from: from, text: text, data: data, mime: mime, time: Date())
+        nextID += 1
+        items.append(c)
+        while items.count > maxItems { items.removeFirst() }
+        while items.count > 1, items.reduce(0, { $0 + ($1.data?.count ?? 0) }) > maxImageBytes { items.removeFirst() }
+        onAdd?(c)
+        return c
+    }
+
+    func after(_ id: Int) -> [LANClip] { items.filter { $0.id > id } }
+    func clip(_ id: Int) -> LANClip? { items.first { $0.id == id } }
+
+    func clear() {
+        items.removeAll()
+        session = randomHex(8)
+    }
+}
+
+// MARK: - Wi-Fi lokal: server HTTP mini (Network.framework, tanpa dependensi)
+
+struct HTTPRequest {
+    let method: String
+    let path: String
+    let query: [String: String]
+    let headers: [String: String] // nama header huruf kecil
+    let body: Data
+    let auth: String // id request yang lolos cek kunci (AAD untuk isi terenkripsi), "" untuk halaman HTML
+}
+
+/// Hasil cek awal request, begitu header lengkap (sebelum body dibaca)
+enum Gate {
+    case allow(maxBody: Int, auth: String)
+    case reject(status: Int, json: [String: Any])
+}
+
+final class HTTPConnection {
+    private let conn: NWConnection
+    private let maxBody: Int
+    private var buffer = Data()
+    private var parsed = false
+    private var headerOK = false // header lengkap & lolos cek kunci/batas body
+    private var gated: (limit: Int, auth: String)? // hasil gate (cek hanya sekali; id request hanya berlaku sekali)
+    private var responded = false
+    private(set) var closed = false
+    let host: String // IP pengirim (tanpa port), untuk membatasi koneksi per perangkat
+    var onRequest: ((HTTPRequest, HTTPConnection) -> Void)?
+    var onClose: (() -> Void)?
+    /// Dipanggil begitu header lengkap, SEBELUM body dibaca: izinkan (dengan batas body) atau tolak.
+    /// Supaya perangkat tanpa kunci tidak bisa memenuhi memori dengan body besar.
+    var gate: (_ method: String, _ path: String, _ headers: [String: String]) -> Gate = { _, _, _ in
+        .reject(status: 403, json: ["error": "key"])
+    }
+
+    static let reasons = [200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed",
+                          411: "Length Required", 413: "Payload Too Large", 415: "Unsupported Media Type",
+                          431: "Request Header Fields Too Large", 500: "Internal Server Error", 503: "Service Unavailable"]
+
+    init(_ c: NWConnection, maxBody: Int) {
+        conn = c
+        self.maxBody = maxBody
+        host = HTTPServer.peerHost(c.endpoint)
+    }
+
+    /// Masih menunggu jawaban (mis. long-poll yang sedang ditahan)
+    var isWaiting: Bool { !closed && !responded }
+
+    func start() {
+        conn.stateUpdateHandler = { [weak self] st in
+            switch st {
+            case .failed, .cancelled: self?.finish()
+            default: break
+            }
+        }
+        conn.start(queue: .main)
+        receive()
+        // klien yang tidak kunjung mengirim request lengkap diputus
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+            if let self, !self.parsed { self.cancel() }
+        }
+        // header saja harus lengkap jauh lebih cepat → slot koneksi tidak bisa ditahan klien yang diam
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            if let self, !self.headerOK { self.cancel() }
+        }
+    }
+
+    private func receive() {
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { [weak self] data, _, isComplete, error in
+            guard let self, !self.closed else { return }
+            if let data { self.buffer.append(data) }
+            if self.parse() { return }
+            if isComplete || error != nil { return self.cancel() }
+            self.receive()
+        }
+    }
+
+    /// true kalau request sudah lengkap (atau sudah dijawab dengan error)
+    private func parse() -> Bool {
+        guard let end = buffer.range(of: Data("\r\n\r\n".utf8)) else {
+            if buffer.count > 32 * 1024 { respond(431, text: "Header terlalu besar"); return true }
+            return false
+        }
+        let head = String(decoding: buffer[buffer.startIndex..<end.lowerBound], as: UTF8.self)
+        var lines = head.components(separatedBy: "\r\n")
+        let first = lines.removeFirst().split(separator: " ")
+        guard first.count >= 2 else { respond(400, text: "Bad request"); return true }
+        var headers: [String: String] = [:]
+        for l in lines {
+            guard let i = l.firstIndex(of: ":") else { continue }
+            headers[l[..<i].trimmingCharacters(in: .whitespaces).lowercased()] =
+                l[l.index(after: i)...].trimmingCharacters(in: .whitespaces)
+        }
+        // browser selalu mengirim Content-Length untuk fetch() dengan body string / File
+        if headers["transfer-encoding"] != nil { respond(411, text: "Content-Length wajib"); return true }
+        let length = Int(headers["content-length"] ?? "0") ?? -1
+        guard length >= 0 else { respond(400, text: "Content-Length tidak valid"); return true }
+        let method = String(first[0]), target = String(first[1])
+        let comps = URLComponents(string: target)
+        var query: [String: String] = [:]
+        for q in comps?.queryItems ?? [] { query[q.name] = q.value ?? "" }
+        let path = comps?.path ?? String(target.split(separator: "?").first ?? "/")
+        // kunci & batas body dicek sebelum body ditunggu / disimpan di memori
+        if gated == nil {
+            switch gate(method, path, headers) {
+            case let .reject(status, obj):
+                respond(status, type: "application/json; charset=utf-8", body: json(obj)); return true
+            case let .allow(maxBody: allowed, auth: auth):
+                gated = (min(allowed, maxBody), auth)
+            }
+        }
+        guard let g = gated else { return true }
+        guard length <= g.limit else { respond(413, text: "Terlalu besar (maks \(byteString(g.limit)))"); return true }
+        headerOK = true
+        let bodyStart = end.upperBound
+        guard buffer.endIndex - bodyStart >= length else { return false }
+
+        let body = buffer.subdata(in: bodyStart..<bodyStart + length)
+        parsed = true
+        buffer = Data()
+        onRequest?(HTTPRequest(method: method, path: path, query: query, headers: headers, body: body, auth: g.auth), self)
+        return true
+    }
+
+    func respond(_ status: Int, type: String = "text/plain; charset=utf-8", body: Data = Data(),
+                 headers extra: [String: String] = [:]) {
+        guard !closed, !responded else { return }
+        responded = true
+        parsed = true
+        var head = "HTTP/1.1 \(status) \(HTTPConnection.reasons[status] ?? "OK")\r\n"
+        var h = ["Content-Type": type, "Content-Length": "\(body.count)", "Connection": "close",
+                 "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"]
+        for (k, v) in extra { h[k] = v }
+        for (k, v) in h { head += "\(k): \(v)\r\n" }
+        head += "\r\n"
+        var out = Data(head.utf8)
+        out.append(body)
+        conn.send(content: out, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { [weak self] _ in
+            self?.cancel()
+        })
+    }
+
+    func respond(_ status: Int, text: String) { respond(status, body: Data(text.utf8)) }
+
+    func respondJSON(_ obj: Any, status: Int = 200) {
+        respond(status, type: "application/json; charset=utf-8", body: json(obj))
+    }
+
+    func cancel() { conn.cancel() }
+
+    private func finish() {
+        guard !closed else { return }
+        closed = true
+        let done = onClose
+        onClose = nil
+        onRequest = nil
+        done?()
+    }
+}
+
+final class HTTPServer {
+    private var listener: NWListener?
+    private var conns: [ObjectIdentifier: HTTPConnection] = [:]
+    private(set) var port: UInt16?
+    private(set) var failed = false
+    /// Koneksi masuk terakhir (diterima / ditolak) → ditampilkan di menu untuk cek apakah HP sampai ke Mac
+    private(set) var lastPeer: (host: String, time: Date, note: String)?
+    var handler: ((HTTPRequest, HTTPConnection) -> Void)?
+    var gate: (_ method: String, _ path: String, _ headers: [String: String]) -> Gate = { _, _, _ in
+        .reject(status: 403, json: ["error": "key"])
+    }
+    var onChange: (() -> Void)?
+
+    let maxBody = 30 * 1024 * 1024
+    let maxConnections = 64
+    let maxPerHost = 12 // satu halaman HP butuh 1 long-poll + beberapa request kirim / gambar (browser: maks 6 paralel)
+
+    var running: Bool { port != nil }
+
+    /// Buka port `first`; kalau sibuk dipakai aplikasi lain, coba port berikutnya
+    func start(from first: UInt16, tries: Int = 12) {
+        stop()
+        failed = false
+        lastPeer = nil
+        listen(first, remaining: tries)
+    }
+
+    private func listen(_ p: UInt16, remaining: Int) {
+        guard remaining > 0, let nwPort = NWEndpoint.Port(rawValue: p) else {
+            failed = true
+            onChange?()
+            return
+        }
+        let params = NWParameters.tcp
+        params.allowLocalEndpointReuse = true
+        guard let l = try? NWListener(using: params, on: nwPort) else { return listen(p &+ 1, remaining: remaining - 1) }
+        l.stateUpdateHandler = { [weak self, weak l] st in
+            guard let self, let l, self.listener === l else { return }
+            switch st {
+            case .ready:
+                self.port = p
+                self.onChange?()
+            case .failed:
+                l.cancel()
+                self.listener = nil
+                self.port = nil
+                self.listen(p &+ 1, remaining: remaining - 1)
+            default: break
+            }
+        }
+        l.newConnectionHandler = { [weak self] c in self?.accept(c) }
+        listener = l
+        l.start(queue: .main)
+    }
+
+    func stop() {
+        listener?.cancel()
+        listener = nil
+        port = nil
+        for c in conns.values { c.cancel() }
+        conns.removeAll()
+    }
+
+    private func accept(_ nc: NWConnection) {
+        // hanya perangkat di jaringan lokal (bukan VPN / IP publik), dan satu perangkat tidak boleh memborong slot
+        let peer = HTTPServer.peerHost(nc.endpoint)
+        guard HTTPServer.isLocalPeer(nc.endpoint) else {
+            lastPeer = (peer, Date(), "ditolak: bukan alamat lokal")
+            return refuse(nc, 403, "PasteLAN hanya melayani perangkat di jaringan lokal yang sama dengan Mac. " +
+                          "Alamat perangkat ini (\(peer)) tidak dikenali sebagai alamat lokal.")
+        }
+        guard conns.count < maxConnections else {
+            lastPeer = (peer, Date(), "ditolak: server penuh")
+            return refuse(nc, 503, "PasteLAN sedang sibuk, coba lagi sebentar.")
+        }
+        let c = HTTPConnection(nc, maxBody: maxBody)
+        guard conns.values.filter({ $0.host == c.host }).count < maxPerHost else {
+            lastPeer = (peer, Date(), "ditolak: terlalu banyak koneksi")
+            return refuse(nc, 503, "Terlalu banyak koneksi dari perangkat ini, coba lagi sebentar.")
+        }
+        lastPeer = (peer, Date(), "diterima")
+        let key = ObjectIdentifier(c)
+        conns[key] = c
+        c.gate = { [weak self] m, p, h in self?.gate(m, p, h) ?? .reject(status: 403, json: ["error": "key"]) }
+        c.onRequest = { [weak self] req, c in self?.handler?(req, c) }
+        c.onClose = { [weak self] in self?.conns[key] = nil }
+        c.start()
+    }
+
+    /// Tolak dengan jawaban singkat, bukan memutus diam-diam: browser menampilkan alasannya
+    /// (koneksi yang diputus tanpa jawaban dicoba ulang browser lalu gagal dengan ERR_TOO_MANY_RETRIES).
+    /// Alasan juga dicatat di Console.app (cari "PasteLAN").
+    private func refuse(_ nc: NWConnection, _ status: Int, _ msg: String) {
+        NSLog("PasteLAN: tolak %@ (%d): %@", HTTPServer.peerHost(nc.endpoint), status, msg)
+        let body = Data(msg.utf8)
+        let head = "HTTP/1.1 \(status) \(HTTPConnection.reasons[status] ?? "Error")\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+            "Content-Length: \(body.count)\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
+        nc.start(queue: .main)
+        // baca dulu request-nya: menutup socket yang masih berisi data belum dibaca mengirim RST → jawaban bisa hilang
+        nc.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { _, _, _, _ in
+            nc.send(content: Data(head.utf8) + body, contentContext: .finalMessage, isComplete: true,
+                    completion: .contentProcessed { _ in nc.cancel() })
+        }
+        // klien yang tidak membaca jawaban tetap diputus
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { nc.cancel() }
+    }
+
+    /// IP pengirim tanpa port (untuk pesan & batas per perangkat)
+    static func peerHost(_ ep: NWEndpoint) -> String {
+        if case let .hostPort(h, _) = ep { return "\(h)" }
+        return "\(ep)"
+    }
+
+    /// IP pribadi (10/8, 172.16/12, 192.168/16), satu subnet dengan Mac, link-local, loopback,
+    /// atau IPv6 lokal (fe80::/10, fc00::/7)
+    static func isLocalPeer(_ ep: NWEndpoint) -> Bool {
+        guard case let .hostPort(host, _) = ep else { return false }
+        var v4: IPv4Address?
+        switch host {
+        case .ipv4(let a): v4 = a
+        case .ipv6(let a):
+            if let m = a.asIPv4 { v4 = m }
+            else { return a.isLinkLocal || a.isLoopback || ([UInt8](a.rawValue).first ?? 0) & 0xfe == 0xfc }
+        default: return false
+        }
+        guard let a = v4 else { return false }
+        let b = [UInt8](a.rawValue)
+        guard b.count == 4 else { return false }
+        if b[0] == 10 || (b[0] == 172 && (16...31).contains(b[1])) || (b[0] == 192 && b[1] == 168)
+            || a.isLinkLocal || a.isLoopback { return true }
+        let ip = b.reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+        return localSubnets().contains { ip & $0.mask == $0.net }
+    }
+}
+
+// MARK: - Wi-Fi lokal: server di Mac (HP di jaringan yang sama scan QR; isi dienkripsi dengan kunci di QR)
+
+final class LANServer {
+    let http = HTTPServer()
+    let store = LANStore()
+    let clipboard: Clipboard
+    let d = UserDefaults.standard
+    let macName = computerName()
+
+    /// Kunci 256-bit di QR code (bagian #k= link, tidak pernah dikirim lewat jaringan).
+    /// Semua isi API dienkripsi ChaCha20-Poly1305 dengan kunci ini → penyadap Wi-Fi tidak bisa membaca / memalsukan.
+    var key = SymmetricKey(size: .bits256)
+    var seen: [String: Int64] = [:] // id request (X-Auth) yang sudah dipakai → waktu (ms), anti replay
+    var waiters: [(c: HTTPConnection, after: Int, auth: String)] = [] // long-poll yang sedang ditahan
+    var onPhone: ((LANClip) -> Void)? // item dari HP (sudah masuk clipboard Mac)
+
+    init(clipboard: Clipboard) {
+        self.clipboard = clipboard
+        d.register(defaults: ["port": 8787])
+        if let k = d.string(forKey: "key").flatMap(fromB64url), k.count == 32 { key = SymmetricKey(data: k) } else { resetKey() }
+        http.handler = { [weak self] r, c in self?.handle(r, c) }
+        http.gate = { [weak self] m, p, h in self?.gate(m, p, h) ?? .reject(status: 403, json: ["error": "key"]) }
+        store.onAdd = { [weak self] _ in self?.wakeWaiters() }
+    }
+
+    var running: Bool { http.running }
+    var port: Int { d.integer(forKey: "port") }
+
+    /// Link yang di-scan HP (nil kalau Mac tidak terhubung ke jaringan lokal / server belum jalan)
+    var shareURL: String? {
+        guard let port = http.port, let ip = localIPv4() else { return nil }
+        return "http://\(ip):\(port)/#k=\(b64url(key.withUnsafeBytes { Data($0) }))"
+    }
+
+    /// Perkiraan jumlah HP yang sedang membuka halaman (tiap halaman menahan satu long-poll)
+    var connectedCount: Int { waiters.filter { $0.c.isWaiting }.count }
+
+    func start() {
+        if !http.running { http.start(from: UInt16(clamping: port)) }
+    }
+
+    func stop() {
+        waiters.removeAll()
+        http.stop()
+    }
+
+    func add(_ c: PasteContent) {
+        store.add(kind: c.kind, from: "mac", text: c.text, data: c.data, mime: c.mime)
+    }
+
+    func clearHistory() {
+        store.clear()
+        // HP yang sedang menunggu langsung diberi session baru → daftarnya dikosongkan
+        wakeWaiters()
+    }
+
+    /// Kunci baru + server dimulai ulang (port & IP dibaca ulang) → semua link lama tidak berlaku
+    func resetLink() {
+        resetKey()
+        let list = waiters
+        waiters.removeAll()
+        for w in list { w.c.respondJSON(["error": "key"], status: 403) }
+        let wasRunning = http.running
+        http.stop()
+        if wasRunning { start() }
+    }
+
+    /// Item baru / riwayat dihapus → jawab semua HP yang sedang menunggu (long-poll)
+    func wakeWaiters() {
+        let list = waiters
+        waiters.removeAll()
+        for w in list { answerItems(w.c, after: w.after, auth: w.auth) }
+    }
+
+    func resetKey() {
+        key = SymmetricKey(size: .bits256)
+        d.set(b64url(key.withUnsafeBytes { Data($0) }), forKey: "key")
+        seen.removeAll()
+    }
+
+    // MARK: HTTP
+
+    /// Dicek begitu header request lengkap (sebelum body dibaca).
+    /// Header X-Auth = "<waktu ms>.<base64url(nonce 12 B + tag 16 B)>": ChaChaPoly tanpa isi dengan
+    /// AAD "PL1|req|<method>|<path>|<waktu>". Hanya pemegang kunci yang bisa membuatnya, dan tiap header
+    /// hanya berlaku sekali (anti replay). Header ini juga menjadi id request untuk AAD isi & jawaban.
+    func gate(_ method: String, _ path: String, _ headers: [String: String]) -> Gate {
+        guard path.hasPrefix("/api/") else { return .allow(maxBody: 0, auth: "") } // halaman HTML: tanpa rahasia, tanpa body
+        let deny = Gate.reject(status: 403, json: ["error": "key"])
+        guard let h = headers["x-auth"], let dot = h.firstIndex(of: "."),
+              let ts = Int64(h[..<dot]), ts > 0, ts < 1 << 50 else { return deny }
+        let auth = String(h[h.index(after: dot)...])
+        guard let raw = fromB64url(auth), raw.count == 28,
+              let nonce = try? ChaChaPoly.Nonce(data: raw.prefix(12)),
+              let box = try? ChaChaPoly.SealedBox(nonce: nonce, ciphertext: Data(), tag: raw.suffix(16)),
+              (try? ChaChaPoly.open(box, using: key, authenticating: Data("PL1|req|\(method)|\(path)|\(ts)".utf8))) != nil
+        else { return deny }
+        // jam HP beda jauh → beri tahu waktu Mac (aman: hanya untuk pemegang kunci), halaman menyesuaikan lalu mengulang
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        guard abs(now - ts) <= 300_000 else { return .reject(status: 409, json: ["error": "time", "now": now]) }
+        seen = seen.filter { now - $0.value <= 600_000 }
+        guard seen[auth] == nil else { return deny }
+        seen[auth] = now
+        switch (method, path) {
+        case ("POST", "/api/text"): return .allow(maxBody: clipboard.maxText + 64, auth: auth) // + nonce & tag
+        case ("POST", "/api/image"): return .allow(maxBody: clipboard.maxImage + 256, auth: auth) // + MIME, nonce & tag
+        default: return .allow(maxBody: 0, auth: auth)
+        }
+    }
+
+    /// Isi request dari HP: kotak ChaChaPoly (nonce + ciphertext + tag) dengan AAD "PL1|body|<id request>"
+    func openBody(_ r: HTTPRequest) -> Data? {
+        guard let box = try? ChaChaPoly.SealedBox(combined: r.body) else { return nil }
+        return try? ChaChaPoly.open(box, using: key, authenticating: Data("PL1|body|\(r.auth)".utf8))
+    }
+
+    /// Jawaban 200 selalu terenkripsi, terikat ke request-nya (AAD "PL1|resp|<id request>")
+    func respondSealed(_ c: HTTPConnection, _ plain: Data, auth: String) {
+        guard let box = try? ChaChaPoly.seal(plain, using: key, authenticating: Data("PL1|resp|\(auth)".utf8)) else {
+            return c.respond(500, text: "Gagal mengenkripsi")
+        }
+        c.respond(200, type: "application/octet-stream", body: box.combined)
+    }
+
+    func handle(_ r: HTTPRequest, _ c: HTTPConnection) {
+        // halaman tidak berisi rahasia (kunci ada di #k=, dibaca JS di HP); semua /api/ sudah lolos gate()
+        if r.path == "/" || r.path == "/index.html" {
+            return c.respond(200, type: "text/html; charset=utf-8", body: Data(Page.html.utf8))
+        }
+        guard r.path.hasPrefix("/api/"), !r.auth.isEmpty else { return c.respond(404, text: "Tidak ditemukan") }
+
+        switch (r.method, r.path) {
+        case ("GET", "/api/items"):
+            // session beda (Mac baru dibuka / riwayat dihapus) → kirim ulang semua item
+            let fresh = r.query["s"] != store.session
+            let after = fresh ? 0 : Int(r.query["after"] ?? "") ?? 0
+            if !fresh, r.query["wait"] == "1", store.after(after).isEmpty {
+                waiters.append((c, after, r.auth))
+                // tidak ada item baru dalam 25 detik → jawab kosong, halaman langsung bertanya lagi
+                DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self, weak c] in
+                    guard let self, let c, let i = self.waiters.firstIndex(where: { $0.c === c }) else { return }
+                    self.waiters.remove(at: i)
+                    self.answerItems(c, after: after, auth: r.auth)
+                }
+                return
+            }
+            answerItems(c, after: after, auth: r.auth)
+
+        case ("POST", "/api/text"):
+            guard let plain = openBody(r) else { return c.respondJSON(["error": "Gagal membuka isi terenkripsi"], status: 400) }
+            guard let text = String(data: plain, encoding: .utf8), !text.isEmpty else {
+                return c.respondJSON(["error": "Teks kosong"], status: 400)
+            }
+            clipboard.writeText(text)
+            let clip = store.add(kind: "text", from: "phone", text: text)
+            onPhone?(clip)
+            respondSealed(c, json(["ok": true, "id": clip.id]), auth: r.auth)
+
+        case ("POST", "/api/image"):
+            // isi terenkripsi = "<mime>\n" + byte gambar (MIME ikut dienkripsi)
+            guard let plain = openBody(r) else { return c.respondJSON(["error": "Gagal membuka isi terenkripsi"], status: 400) }
+            guard let nl = plain.prefix(128).firstIndex(of: 0x0A) else { return c.respondJSON(["error": "Format tidak dikenal"], status: 400) }
+            var mime = String(decoding: plain[plain.startIndex..<nl], as: UTF8.self).lowercased()
+            if mime == "image/jpg" { mime = "image/jpeg" }
+            let data = Data(plain[(nl + 1)...])
+            guard !data.isEmpty, clipboard.writeImage(data, mime: mime) else {
+                return c.respondJSON(["error": "Bukan gambar yang didukung"], status: 415)
+            }
+            // MIME dari HP ikut dikirim balik di daftar item → hanya format gambar biasa (bukan image/svg+xml dll.)
+            let clip = store.add(kind: "image", from: "phone", data: data, mime: Clipboard.imageMimes.contains(mime) ? mime : "image/png")
+            onPhone?(clip)
+            respondSealed(c, json(["ok": true, "id": clip.id]), auth: r.auth)
+
+        case ("GET", let p) where p.hasPrefix("/api/image/"):
+            guard let id = Int(p.dropFirst("/api/image/".count)), let clip = store.clip(id), let data = clip.data else {
+                return c.respond(404, text: "Gambar tidak ada lagi di riwayat")
+            }
+            // terenkripsi → halaman membukanya lalu menampilkan sebagai blob: (jenis gambar dari daftar item)
+            respondSealed(c, data, auth: r.auth)
+
+        default:
+            c.respond(404, text: "Tidak ditemukan")
+        }
+    }
+
+    func answerItems(_ c: HTTPConnection, after: Int, auth: String) {
+        respondSealed(c, json(["session": store.session, "name": macName, "items": store.after(after).map { $0.info }]), auth: auth)
+    }
+}
+
+// MARK: - Wi-Fi lokal: halaman web untuk HP (ditanam di aplikasi, tanpa file / CDN eksternal)
+
+enum Page {
+    static let html = #"""
+    <!doctype html>
+    <html lang="id">
+    <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="PasteLAN">
+    <meta name="referrer" content="no-referrer">
+    <title>PasteLAN</title>
+    <style>
+    :root{--bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--muted:#6e6e73;--line:#e5e5ea;--accent:#007aff;--ok:#34c759;--bad:#ff3b30}
+    @media (prefers-color-scheme:dark){:root{--bg:#000;--card:#1c1c1e;--text:#f5f5f7;--muted:#98989d;--line:#38383a;--accent:#0a84ff;--ok:#30d158;--bad:#ff453a}}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
+    header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:8px;padding:12px 16px;padding-top:calc(12px + env(safe-area-inset-top));background:var(--bg);border-bottom:1px solid var(--line)}
+    header h1{font-size:18px;margin:0;flex:1}
+    .dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
+    .dot.on{background:var(--ok)}.dot.off{background:var(--bad)}
+    #status{font-size:13px;color:var(--muted);text-align:right}
+    main{max-width:640px;margin:0 auto;padding:16px;padding-bottom:calc(32px + env(safe-area-inset-bottom))}
+    .card{background:var(--card);border-radius:14px;padding:12px;margin-bottom:12px;border:1px solid var(--line)}
+    textarea{width:100%;min-height:96px;resize:vertical;border:1px solid var(--line);border-radius:10px;padding:10px;font:inherit;background:transparent;color:inherit}
+    .row{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+    button,.btn{appearance:none;-webkit-appearance:none;border:0;border-radius:10px;padding:10px 14px;font:inherit;font-weight:600;background:var(--accent);color:#fff;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+    .ghost{background:transparent;color:var(--accent);border:1px solid var(--line)}
+    button:disabled{opacity:.5}
+    .grow{flex:1}
+    .meta{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--muted);margin-bottom:6px}
+    .txt{white-space:pre-wrap;word-break:break-word;max-height:9.5em;overflow:hidden}
+    .txt.full{max-height:none}
+    .item img{display:block;max-width:100%;max-height:360px;border-radius:8px;margin:0 auto;-webkit-touch-callout:default}
+    .empty{text-align:center;color:var(--muted);padding:24px 8px}
+    .hint{font-size:12px;color:var(--muted);margin-top:6px}
+    h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:20px 4px 8px}
+    #toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);background:rgba(0,0,0,.85);color:#fff;padding:8px 14px;border-radius:20px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90%;text-align:center}
+    #toast.show{opacity:1}
+    </style>
+    </head>
+    <body>
+    <header><span id="dot" class="dot"></span><h1>PasteLAN</h1><span id="status">Menghubungkan…</span></header>
+    <main>
+      <div class="card">
+        <textarea id="input" placeholder="Tempel teks di sini, lalu kirim ke Mac…"></textarea>
+        <div class="row">
+          <button id="send" class="grow">Kirim ke Mac</button>
+          <button id="pick" class="ghost">Kirim gambar</button>
+          <input id="file" type="file" accept="image/*" multiple hidden>
+        </div>
+        <div class="hint">Setelah terkirim, tekan ⌘V di Mac. Gambar juga bisa ditempel langsung di kotak teks.</div>
+      </div>
+      <h2>Clipboard</h2>
+      <div id="list"></div>
+    </main>
+    <div id="toast"></div>
+    <script>
+    (() => {
+      // ---------- ChaCha20-Poly1305 (RFC 8439), sama dengan CryptoKit.ChaChaPoly ----------
+      // HTTP lokal bukan "secure context" → crypto.subtle tidak ada, jadi ditulis sendiri.
+      // Format kotak tersegel = nonce (12 B) + ciphertext + tag (16 B), sama dengan SealedBox.combined.
+      const AEAD = (() => {
+        // satu blok keystream (64 B) → out (Uint32Array 16); variabel lokal supaya cepat di JIT
+        function block(k, counter, n, out) {
+          const j0 = 0x61707865, j1 = 0x3320646e, j2 = 0x79622d32, j3 = 0x6b206574;
+          let x0 = j0, x1 = j1, x2 = j2, x3 = j3, x4 = k[0], x5 = k[1], x6 = k[2], x7 = k[3];
+          let x8 = k[4], x9 = k[5], x10 = k[6], x11 = k[7], x12 = counter, x13 = n[0], x14 = n[1], x15 = n[2], t;
+          for (let i = 0; i < 10; i++) {
+            x0 = x0 + x4 | 0; t = x12 ^ x0; x12 = t << 16 | t >>> 16; x8 = x8 + x12 | 0; t = x4 ^ x8; x4 = t << 12 | t >>> 20;
+            x0 = x0 + x4 | 0; t = x12 ^ x0; x12 = t << 8 | t >>> 24; x8 = x8 + x12 | 0; t = x4 ^ x8; x4 = t << 7 | t >>> 25;
+            x1 = x1 + x5 | 0; t = x13 ^ x1; x13 = t << 16 | t >>> 16; x9 = x9 + x13 | 0; t = x5 ^ x9; x5 = t << 12 | t >>> 20;
+            x1 = x1 + x5 | 0; t = x13 ^ x1; x13 = t << 8 | t >>> 24; x9 = x9 + x13 | 0; t = x5 ^ x9; x5 = t << 7 | t >>> 25;
+            x2 = x2 + x6 | 0; t = x14 ^ x2; x14 = t << 16 | t >>> 16; x10 = x10 + x14 | 0; t = x6 ^ x10; x6 = t << 12 | t >>> 20;
+            x2 = x2 + x6 | 0; t = x14 ^ x2; x14 = t << 8 | t >>> 24; x10 = x10 + x14 | 0; t = x6 ^ x10; x6 = t << 7 | t >>> 25;
+            x3 = x3 + x7 | 0; t = x15 ^ x3; x15 = t << 16 | t >>> 16; x11 = x11 + x15 | 0; t = x7 ^ x11; x7 = t << 12 | t >>> 20;
+            x3 = x3 + x7 | 0; t = x15 ^ x3; x15 = t << 8 | t >>> 24; x11 = x11 + x15 | 0; t = x7 ^ x11; x7 = t << 7 | t >>> 25;
+            x0 = x0 + x5 | 0; t = x15 ^ x0; x15 = t << 16 | t >>> 16; x10 = x10 + x15 | 0; t = x5 ^ x10; x5 = t << 12 | t >>> 20;
+            x0 = x0 + x5 | 0; t = x15 ^ x0; x15 = t << 8 | t >>> 24; x10 = x10 + x15 | 0; t = x5 ^ x10; x5 = t << 7 | t >>> 25;
+            x1 = x1 + x6 | 0; t = x12 ^ x1; x12 = t << 16 | t >>> 16; x11 = x11 + x12 | 0; t = x6 ^ x11; x6 = t << 12 | t >>> 20;
+            x1 = x1 + x6 | 0; t = x12 ^ x1; x12 = t << 8 | t >>> 24; x11 = x11 + x12 | 0; t = x6 ^ x11; x6 = t << 7 | t >>> 25;
+            x2 = x2 + x7 | 0; t = x13 ^ x2; x13 = t << 16 | t >>> 16; x8 = x8 + x13 | 0; t = x7 ^ x8; x7 = t << 12 | t >>> 20;
+            x2 = x2 + x7 | 0; t = x13 ^ x2; x13 = t << 8 | t >>> 24; x8 = x8 + x13 | 0; t = x7 ^ x8; x7 = t << 7 | t >>> 25;
+            x3 = x3 + x4 | 0; t = x14 ^ x3; x14 = t << 16 | t >>> 16; x9 = x9 + x14 | 0; t = x4 ^ x9; x4 = t << 12 | t >>> 20;
+            x3 = x3 + x4 | 0; t = x14 ^ x3; x14 = t << 8 | t >>> 24; x9 = x9 + x14 | 0; t = x4 ^ x9; x4 = t << 7 | t >>> 25;
+          }
+          out[0] = x0 + j0; out[1] = x1 + j1; out[2] = x2 + j2; out[3] = x3 + j3;
+          out[4] = x4 + k[0]; out[5] = x5 + k[1]; out[6] = x6 + k[2]; out[7] = x7 + k[3];
+          out[8] = x8 + k[4]; out[9] = x9 + k[5]; out[10] = x10 + k[6]; out[11] = x11 + k[7];
+          out[12] = x12 + counter; out[13] = x13 + n[0]; out[14] = x14 + n[1]; out[15] = x15 + n[2];
+        }
+        const words = (b, n) => { const w = new Uint32Array(n); for (let i = 0; i < n; i++) w[i] = b[4 * i] | b[4 * i + 1] << 8 | b[4 * i + 2] << 16 | b[4 * i + 3] << 24; return w; };
+        // XOR dengan keystream mulai dari blok `counter`
+        function chacha(key, nonce, counter, input) {
+          const k = words(key, 8), n = words(nonce, 3), out = new Uint8Array(input.length);
+          const ks = new Uint32Array(16), ks8 = new Uint8Array(ks.buffer); // little-endian di semua HP
+          for (let off = 0; off < input.length; off += 64, counter++) {
+            block(k, counter, n, ks);
+            const end = Math.min(64, input.length - off);
+            for (let i = 0; i < end; i++) out[off + i] = input[off + i] ^ ks8[i];
+          }
+          return out;
+        }
+        // Poly1305 dengan 10 limb 13-bit (Float64Array: semua hasil kali & jumlah < 2^53 → eksak)
+        function limbs(b, o, hibit, h) {
+          const t0 = b[o] | b[o + 1] << 8, t1 = b[o + 2] | b[o + 3] << 8, t2 = b[o + 4] | b[o + 5] << 8, t3 = b[o + 6] | b[o + 7] << 8;
+          const t4 = b[o + 8] | b[o + 9] << 8, t5 = b[o + 10] | b[o + 11] << 8, t6 = b[o + 12] | b[o + 13] << 8, t7 = b[o + 14] | b[o + 15] << 8;
+          h[0] += t0 & 0x1fff;
+          h[1] += ((t0 >>> 13) | (t1 << 3)) & 0x1fff;
+          h[2] += ((t1 >>> 10) | (t2 << 6)) & 0x1fff;
+          h[3] += ((t2 >>> 7) | (t3 << 9)) & 0x1fff;
+          h[4] += ((t3 >>> 4) | (t4 << 12)) & 0x1fff;
+          h[5] += (t4 >>> 1) & 0x1fff;
+          h[6] += ((t4 >>> 14) | (t5 << 2)) & 0x1fff;
+          h[7] += ((t5 >>> 11) | (t6 << 5)) & 0x1fff;
+          h[8] += ((t6 >>> 8) | (t7 << 8)) & 0x1fff;
+          h[9] += (t7 >>> 5) | hibit;
+        }
+        // setelah ini semua limb < 2^13 (nilai < 2^130)
+        function carry(h) {
+          let c;
+          do {
+            c = 0;
+            for (let i = 0; i < 10; i++) { const v = h[i] + c; c = Math.floor(v / 8192); h[i] = v - c * 8192; }
+            h[0] += c * 5; // 2^130 ≡ 5 (mod p)
+          } while (c);
+        }
+        // msg: panjangnya selalu kelipatan 16 (AEAD sudah di-pad)
+        function poly1305(key, msg) {
+          const rb = key.slice(0, 16);
+          rb[3] &= 15; rb[7] &= 15; rb[11] &= 15; rb[15] &= 15; rb[4] &= 252; rb[8] &= 252; rb[12] &= 252;
+          const r = new Float64Array(10); limbs(rb, 0, 0, r);
+          const r0 = r[0], r1 = r[1], r2 = r[2], r3 = r[3], r4 = r[4], r5 = r[5], r6 = r[6], r7 = r[7], r8 = r[8], r9 = r[9];
+          const s1 = 5 * r1, s2 = 5 * r2, s3 = 5 * r3, s4 = 5 * r4, s5 = 5 * r5, s6 = 5 * r6, s7 = 5 * r7, s8 = 5 * r8, s9 = 5 * r9; // 2^130 ≡ 5 (mod p)
+          const h = new Float64Array(10);
+          let h0 = 0, h1 = 0, h2 = 0, h3 = 0, h4 = 0, h5 = 0, h6 = 0, h7 = 0, h8 = 0, h9 = 0, c;
+          for (let o = 0; o < msg.length; o += 16) {
+            const t0 = msg[o] | msg[o + 1] << 8, t1 = msg[o + 2] | msg[o + 3] << 8, t2 = msg[o + 4] | msg[o + 5] << 8, t3 = msg[o + 6] | msg[o + 7] << 8;
+            const t4 = msg[o + 8] | msg[o + 9] << 8, t5 = msg[o + 10] | msg[o + 11] << 8, t6 = msg[o + 12] | msg[o + 13] << 8, t7 = msg[o + 14] | msg[o + 15] << 8;
+            h0 += t0 & 0x1fff; h1 += ((t0 >>> 13) | (t1 << 3)) & 0x1fff; h2 += ((t1 >>> 10) | (t2 << 6)) & 0x1fff;
+            h3 += ((t2 >>> 7) | (t3 << 9)) & 0x1fff; h4 += ((t3 >>> 4) | (t4 << 12)) & 0x1fff; h5 += (t4 >>> 1) & 0x1fff;
+            h6 += ((t4 >>> 14) | (t5 << 2)) & 0x1fff; h7 += ((t5 >>> 11) | (t6 << 5)) & 0x1fff; h8 += ((t6 >>> 8) | (t7 << 8)) & 0x1fff;
+            h9 += (t7 >>> 5) | 1 << 11; // + 2^128
+            let d0 = h0 * r0 + h1 * s9 + h2 * s8 + h3 * s7 + h4 * s6 + h5 * s5 + h6 * s4 + h7 * s3 + h8 * s2 + h9 * s1;
+            let d1 = h0 * r1 + h1 * r0 + h2 * s9 + h3 * s8 + h4 * s7 + h5 * s6 + h6 * s5 + h7 * s4 + h8 * s3 + h9 * s2;
+            let d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * s9 + h4 * s8 + h5 * s7 + h6 * s6 + h7 * s5 + h8 * s4 + h9 * s3;
+            let d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * s9 + h5 * s8 + h6 * s7 + h7 * s6 + h8 * s5 + h9 * s4;
+            let d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0 + h5 * s9 + h6 * s8 + h7 * s7 + h8 * s6 + h9 * s5;
+            let d5 = h0 * r5 + h1 * r4 + h2 * r3 + h3 * r2 + h4 * r1 + h5 * r0 + h6 * s9 + h7 * s8 + h8 * s7 + h9 * s6;
+            let d6 = h0 * r6 + h1 * r5 + h2 * r4 + h3 * r3 + h4 * r2 + h5 * r1 + h6 * r0 + h7 * s9 + h8 * s8 + h9 * s7;
+            let d7 = h0 * r7 + h1 * r6 + h2 * r5 + h3 * r4 + h4 * r3 + h5 * r2 + h6 * r1 + h7 * r0 + h8 * s9 + h9 * s8;
+            let d8 = h0 * r8 + h1 * r7 + h2 * r6 + h3 * r5 + h4 * r4 + h5 * r3 + h6 * r2 + h7 * r1 + h8 * r0 + h9 * s9;
+            let d9 = h0 * r9 + h1 * r8 + h2 * r7 + h3 * r6 + h4 * r5 + h5 * r4 + h6 * r3 + h7 * r2 + h8 * r1 + h9 * r0;
+            // carry ringan: cukup supaya limb tetap kecil untuk perkalian berikutnya
+            c = Math.floor(d0 / 8192); h0 = d0 - c * 8192;
+            d1 += c; c = Math.floor(d1 / 8192); h1 = d1 - c * 8192;
+            d2 += c; c = Math.floor(d2 / 8192); h2 = d2 - c * 8192;
+            d3 += c; c = Math.floor(d3 / 8192); h3 = d3 - c * 8192;
+            d4 += c; c = Math.floor(d4 / 8192); h4 = d4 - c * 8192;
+            d5 += c; c = Math.floor(d5 / 8192); h5 = d5 - c * 8192;
+            d6 += c; c = Math.floor(d6 / 8192); h6 = d6 - c * 8192;
+            d7 += c; c = Math.floor(d7 / 8192); h7 = d7 - c * 8192;
+            d8 += c; c = Math.floor(d8 / 8192); h8 = d8 - c * 8192;
+            d9 += c; c = Math.floor(d9 / 8192); h9 = d9 - c * 8192;
+            h0 += c * 5;
+          }
+          h[0] = h0; h[1] = h1; h[2] = h2; h[3] = h3; h[4] = h4; h[5] = h5; h[6] = h6; h[7] = h7; h[8] = h8; h[9] = h9;
+          carry(h);
+          // h ≥ p (= 2^130 - 5)? → kurangi p
+          const g = Float64Array.from(h); g[0] += 5;
+          c = 0;
+          for (let i = 0; i < 10; i++) { const v = g[i] + c; c = Math.floor(v / 8192); g[i] = v - c * 8192; }
+          const f = c > 0 ? g : h; // h + 5 ≥ 2^130
+          const w = [
+            (f[0] | f[1] << 13), (f[1] >>> 3 | f[2] << 10), (f[2] >>> 6 | f[3] << 7), (f[3] >>> 9 | f[4] << 4),
+            (f[4] >>> 12 | f[5] << 1 | f[6] << 14), (f[6] >>> 2 | f[7] << 11), (f[7] >>> 5 | f[8] << 8), (f[8] >>> 8 | f[9] << 5)
+          ];
+          const tag = new Uint8Array(16);
+          c = 0;
+          for (let i = 0; i < 8; i++) {
+            const v = (w[i] & 0xffff) + (key[16 + 2 * i] | key[17 + 2 * i] << 8) + c;
+            tag[2 * i] = v & 255; tag[2 * i + 1] = (v >>> 8) & 255; c = v >>> 16;
+          }
+          return tag;
+        }
+        function mac(key, nonce, aad, ct) {
+          const pk = chacha(key, nonce, 0, new Uint8Array(32));
+          const pad = n => (16 - n % 16) % 16;
+          const m = new Uint8Array(aad.length + pad(aad.length) + ct.length + pad(ct.length) + 16);
+          m.set(aad, 0); m.set(ct, aad.length + pad(aad.length));
+          const dv = new DataView(m.buffer, m.length - 16);
+          dv.setUint32(0, aad.length, true); dv.setUint32(8, ct.length, true); // < 4 GB
+          return poly1305(pk, m);
+        }
+        const enc = s => new TextEncoder().encode(s);
+        return {
+          seal(key, plain, aad) {
+            const nonce = crypto.getRandomValues(new Uint8Array(12));
+            const ct = chacha(key, nonce, 1, plain);
+            const out = new Uint8Array(12 + ct.length + 16);
+            out.set(nonce); out.set(ct, 12); out.set(mac(key, nonce, enc(aad), ct), 12 + ct.length);
+            return out;
+          },
+          // null kalau tag tidak cocok (kunci salah / data diubah)
+          open(key, box, aad) {
+            if (box.length < 28) return null;
+            const nonce = box.subarray(0, 12), ct = box.subarray(12, box.length - 16), tag = box.subarray(box.length - 16);
+            const t = mac(key, nonce, enc(aad), ct);
+            let diff = 0;
+            for (let i = 0; i < 16; i++) diff |= t[i] ^ tag[i];
+            return diff ? null : chacha(key, nonce, 1, ct);
+          }
+        };
+      })();
+
+      // kunci dari #k= (fragment tidak pernah dikirim lewat jaringan); disimpan juga untuk ikon Layar Utama
+      const b64d = s => { try { return Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)); } catch (e) { return null; } };
+      const b64e = a => btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      let keyText = new URLSearchParams(location.hash.slice(1)).get('k') || '';
+      try { if (keyText) localStorage.setItem('pastelan-key', keyText); else keyText = localStorage.getItem('pastelan-key') || ''; } catch (e) {}
+      const key = b64d(keyText);
+      const $ = id => document.getElementById(id);
+      const MAX_ITEMS = 20, MAX_BYTES = 30 * 1024 * 1024;
+      let after = 0, session = '', stopped = false, ctrl = null, clockOffset = 0; // clockOffset = jam Mac − jam HP (ms)
+
+      function toast(msg) {
+        const t = $('toast');
+        t.textContent = msg;
+        t.classList.add('show');
+        clearTimeout(toast.h);
+        toast.h = setTimeout(() => t.classList.remove('show'), 2000);
+      }
+      function setStatus(state, text) { $('dot').className = 'dot ' + state; $('status').textContent = text; }
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+      function showEmpty() {
+        if (!$('list').children.length) $('list').innerHTML = '<div class="empty">Belum ada apa-apa. Copy sesuatu di Mac (⌘C), atau kirim dari HP ini.</div>';
+      }
+      function expired() {
+        stopped = true;
+        setStatus('off', 'Link tidak berlaku');
+        $('list').innerHTML = '<div class="card empty">Link ini sudah tidak berlaku. Klik ikon ⇄ PasteLAN di menu bar Mac, lalu scan ulang QR code-nya.</div>';
+      }
+
+      // Semua request terenkripsi: X-Auth membuktikan pemegang kunci (sekali pakai), body & jawaban 200 berupa
+      // kotak ChaCha20-Poly1305 yang terikat ke X-Auth itu. Penyadap Wi-Fi hanya melihat ukuran & waktu.
+      async function api(path, { method = 'GET', body = null, signal, raw = false } = {}, retry = true) {
+        const ts = Date.now() + clockOffset;
+        const auth = b64e(AEAD.seal(key, new Uint8Array(0), `PL1|req|${method}|${path.split('?')[0]}|${ts}`));
+        const opts = { method, signal, headers: { 'X-Auth': ts + '.' + auth } };
+        if (body) { opts.body = AEAD.seal(key, body, 'PL1|body|' + auth); opts.headers['Content-Type'] = 'application/octet-stream'; }
+        const r = await fetch(path, opts);
+        if (r.status === 403) { expired(); throw new Error('403'); }
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          // jam HP beda jauh dengan Mac → sesuaikan, ulangi sekali
+          if (r.status === 409 && j.now && retry) { clockOffset = j.now - Date.now(); return api(path, { method, body, signal, raw }, false); }
+          throw new Error(j.error || ('HTTP ' + r.status));
+        }
+        const plain = AEAD.open(key, new Uint8Array(await r.arrayBuffer()), 'PL1|resp|' + auth);
+        if (!plain) throw new Error('jawaban rusak');
+        return raw ? plain : JSON.parse(new TextDecoder().decode(plain));
+      }
+      function clearList() {
+        for (const c of $('list').children) if (c.blobURL) URL.revokeObjectURL(c.blobURL);
+        $('list').textContent = '';
+      }
+
+      // ---------- menerima dari Mac (long-poll) ----------
+      async function poll() {
+        while (!stopped) {
+          ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 35000);
+          try {
+            const j = await api(`/api/items?after=${after}&s=${encodeURIComponent(session)}&wait=1`, { signal: ctrl.signal });
+            if (j.session !== session) { session = j.session; after = 0; clearList(); }
+            setStatus('on', 'Terhubung ke ' + j.name);
+            for (const it of j.items) { add(it); after = Math.max(after, it.id); }
+            showEmpty();
+          } catch (e) {
+            if (stopped) return;
+            if (e.name !== 'AbortError') { setStatus('off', 'Terputus, mencoba lagi…'); await sleep(2000); }
+          } finally { clearTimeout(timer); }
+        }
+      }
+      // HP baru dibuka / pindah tab → jangan tunggu request lama yang mungkin sudah mati
+      document.addEventListener('visibilitychange', () => { if (!document.hidden && ctrl) ctrl.abort(); });
+
+      function el(tag, cls, text) {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text != null) e.textContent = text;
+        return e;
+      }
+      function button(label, cls, onclick) {
+        const b = el('button', cls, label);
+        b.onclick = () => onclick(b);
+        return b;
+      }
+
+      function add(it) {
+        const list = $('list');
+        const empty = list.querySelector('.empty');
+        if (empty) empty.remove();
+        const card = el('div', 'card item');
+        const meta = el('div', 'meta');
+        const time = new Date(it.time).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+        meta.append(el('span', '', it.from === 'mac' ? '💻 Dari Mac' : '📱 Dari HP'), el('span', '', time));
+        card.append(meta);
+        const row = el('div', 'row');
+        if (it.kind === 'text') {
+          const t = el('div', 'txt', it.text);
+          card.append(t);
+          row.append(button('Salin', 'grow', () => copyText(it.text)));
+          if (it.text.length > 300 || it.text.split('\n').length > 6) {
+            row.append(button('Selengkapnya', 'ghost', b => {
+              t.classList.toggle('full');
+              b.textContent = t.classList.contains('full') ? 'Ringkas' : 'Selengkapnya';
+            }));
+          }
+        } else {
+          const img = el('img');
+          img.alt = 'Gambar';
+          card.append(img);
+          const a = el('a', 'btn grow', 'Simpan / buka');
+          // gambar terenkripsi → dibuka di HP lalu ditampilkan sebagai blob:
+          api(`/api/image/${it.id}?s=${encodeURIComponent(session)}`, { raw: true }).then(bytes => {
+            card.blobURL = img.src = a.href = URL.createObjectURL(new Blob([bytes], { type: it.mime || 'image/png' }));
+          }).catch(() => { img.alt = 'Gambar gagal dimuat'; });
+          a.download = `pastelan-${it.id}.${(it.mime || 'image/png').split('/')[1].replace('jpeg', 'jpg')}`;
+          a.target = '_blank';
+          row.append(a);
+        }
+        card.append(row);
+        if (it.kind !== 'text') card.append(el('div', 'hint', 'Tekan lama gambar untuk menyalin atau menyimpan.'));
+        list.prepend(card);
+        while (list.children.length > MAX_ITEMS) {
+          if (list.lastChild.blobURL) URL.revokeObjectURL(list.lastChild.blobURL);
+          list.lastChild.remove();
+        }
+      }
+
+      // HTTP lokal bukan "secure context" → navigator.clipboard sering tidak ada, pakai cara lama
+      async function copyText(text) {
+        try {
+          if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return toast('Tersalin ✓'); }
+        } catch (e) {}
+        const ta = el('textarea');
+        ta.value = text;
+        ta.readOnly = true;
+        ta.contentEditable = 'true';
+        Object.assign(ta.style, { position: 'fixed', top: '0', left: '0', opacity: '0', fontSize: '16px' });
+        document.body.append(ta);
+        const range = document.createRange();
+        range.selectNodeContents(ta);
+        const sel = getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        let ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) {}
+        ta.remove();
+        sel.removeAllRanges();
+        toast(ok ? 'Tersalin ✓' : 'Gagal menyalin otomatis. Tekan lama teksnya untuk menyalin manual.');
+      }
+
+      // ---------- mengirim ke Mac ----------
+      async function sendText() {
+        const text = $('input').value;
+        if (!text.trim()) { toast('Tulis atau tempel teks dulu'); $('input').focus(); return; }
+        $('send').disabled = true;
+        try {
+          await api('/api/text', { method: 'POST', body: new TextEncoder().encode(text) });
+          $('input').value = '';
+          toast('Terkirim ke clipboard Mac ✓');
+        } catch (e) { if (!stopped) toast('Gagal mengirim: ' + e.message); }
+        finally { $('send').disabled = false; }
+      }
+      async function sendImage(file) {
+        if (file.size > MAX_BYTES) return toast('Gambar terlalu besar (maks 30 MB)');
+        toast('Mengirim gambar…');
+        try {
+          // isi = "<mime>\n" + byte gambar, lalu dienkripsi utuh
+          const head = new TextEncoder().encode((file.type || 'application/octet-stream') + '\n');
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const body = new Uint8Array(head.length + bytes.length);
+          body.set(head); body.set(bytes, head.length);
+          await api('/api/image', { method: 'POST', body });
+          toast('Gambar masuk ke clipboard Mac ✓');
+        } catch (e) { if (!stopped) toast('Gagal mengirim gambar: ' + e.message); }
+      }
+
+      $('send').onclick = sendText;
+      $('input').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendText(); } });
+      $('pick').onclick = () => $('file').click();
+      $('file').onchange = async e => {
+        for (const f of [...e.target.files]) await sendImage(f);
+        e.target.value = '';
+      };
+      $('input').addEventListener('paste', e => {
+        const files = [...((e.clipboardData && e.clipboardData.items) || [])]
+          .filter(i => i.kind === 'file' && i.type.startsWith('image/'))
+          .map(i => i.getAsFile()).filter(Boolean);
+        if (files.length) { e.preventDefault(); files.reduce((p, f) => p.then(() => sendImage(f)), Promise.resolve()); }
+      });
+
+      if (!key || key.length !== 32) expired(); else { showEmpty(); poll(); }
+    })();
+    </script>
+    </body>
+    </html>
+    """#
+}
+
 // MARK: - Update (cek rilis terbaru di GitHub Releases)
 
 final class Updater: NSObject {
@@ -629,6 +1668,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let updater = Updater()
     let server = PasteServer()
     let clipboard = Clipboard()
+    lazy var lan = LANServer(clipboard: clipboard)
     let macName = computerName()
     var flashTimer: Timer?
 
@@ -636,10 +1676,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var autoSend: Bool { d.bool(forKey: "autoSend") }
     var serverURL: URL? { d.string(forKey: "serverURL").flatMap(PasteServer.normalize) }
     var loggedIn: Bool { server.token != nil }
+    /// Metode: "server" (default, lewat server PasteLAN) atau "lan" (Wi-Fi lokal tanpa server)
+    var lanMode: Bool { d.string(forKey: "mode") == "lan" }
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        d.register(defaults: ["sharing": true, "autoSend": true, "saveImages": false])
-        for k in ["key", "token", "port"] { d.removeObject(forKey: k) } // sisa mode Wi-Fi lokal (v0.x)
+        d.register(defaults: ["sharing": true, "autoSend": true, "saveImages": false, "mode": "server"])
+        d.removeObject(forKey: "token") // link Wi-Fi lokal lama (v0.1.x, token di ?t=) tidak berlaku lagi
 
         item.autosaveName = "PasteLAN" // posisi ikon diingat
         item.button?.toolTip = "PasteLAN — copy-paste Mac ⇄ HP"
@@ -651,6 +1693,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         server.onChange = { [weak self] in self?.updateIcon() }
         server.onIncoming = { [weak self] c in self?.receive(c) }
         server.onUnauthorized = { [weak self] in self?.loginExpired() }
+        lan.http.onChange = { [weak self] in self?.updateIcon() }
+        lan.onPhone = { [weak self] c in self?.receivedFromLAN(c) }
         clipboard.onChange = { [weak self] in self?.sendClipboard() }
 
         applySharing()
@@ -661,10 +1705,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 self.showHelp()
                 self.askAutoSend()
-                if !self.loggedIn { self.setupServer() }
+                if !self.lanMode, !self.loggedIn { self.setupServer() }
             }
-        } else if !loggedIn, !d.bool(forKey: "askedServer") {
-            // update dari versi Wi-Fi lokal (v0.x): minta alamat server sekali
+        } else if !lanMode, !loggedIn, !d.bool(forKey: "askedServer") {
+            // update dari versi Wi-Fi lokal (v0.x): minta alamat server sekali (atau pilih tetap Wi-Fi lokal)
             d.set(true, forKey: "askedServer")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.setupServer() }
         }
@@ -672,21 +1716,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: berbagi
 
+    /// Hanya satu metode yang jalan: saat memakai server, port lokal di Mac tertutup (dan sebaliknya)
     func applySharing() {
-        if sharing, loggedIn {
+        let active = sharing && (lanMode || loggedIn)
+        if active, lanMode {
+            server.stop()
+            lan.start()
+        } else if active {
+            lan.stop()
             if !server.running { server.start() }
-            if autoSend { clipboard.startWatching() } else { clipboard.stopWatching() }
         } else {
             server.stop()
-            clipboard.stopWatching()
+            lan.stop()
         }
+        if active, autoSend { clipboard.startWatching() } else { clipboard.stopWatching() }
         updateIcon()
     }
 
     func updateIcon() {
         guard let b = item.button else { return }
         if flashTimer == nil { b.image = symbol("arrow.left.arrow.right.circle") }
-        b.appearsDisabled = !sharing || server.state != .connected
+        b.appearsDisabled = !sharing || (lanMode ? !lan.running : server.state != .connected)
     }
 
     /// Ikon ✓ sebentar saat menerima sesuatu dari HP
@@ -700,7 +1750,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func sendClipboard() {
-        guard sharing, loggedIn, let c = clipboard.read() else { return }
+        guard sharing, let c = clipboard.read() else { return }
+        if lanMode { return lan.add(c) }
+        guard loggedIn else { return }
         if let text = c.text { server.sendText(text) }
         else if let data = c.data { server.sendImage(data) }
     }
@@ -717,6 +1769,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.flash()
             }
         }
+    }
+
+    /// Item dari HP lewat Wi-Fi lokal (sudah masuk clipboard Mac)
+    func receivedFromLAN(_ c: LANClip) {
+        if c.kind == "image", let data = c.data, d.bool(forKey: "saveImages") { saveToDownloads(data, mime: c.mime) }
+        flash()
     }
 
     /// Pertama kali dipakai: pengguna memilih sendiri apakah setiap copy di Mac langsung tersedia untuk HP
@@ -765,9 +1823,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.accessoryView = box
         a.addButton(withTitle: "Login")
         a.addButton(withTitle: "Batal")
+        a.addButton(withTitle: "Pakai Wi-Fi lokal saja")
         a.window.initialFirstResponder = urlField.stringValue.isEmpty ? urlField : pwField
         NSApp.activate(ignoringOtherApps: true)
-        guard a.runModal() == .alertFirstButtonReturn else { return }
+        let choice = a.runModal()
+        if choice == .alertThirdButtonReturn { return setMode("lan") }
+        guard choice == .alertFirstButtonReturn else { return }
         guard let url = PasteServer.normalize(urlField.stringValue) else {
             return showError("Alamat server tidak valid", "Pakai alamat HTTPS server PasteLAN, mis. pastelan.example.com.")
         }
@@ -778,6 +1839,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let token else { return self.showError("Login gagal", err ?? "Tidak diketahui") }
                 Keychain.token = token
                 self.d.set(url.absoluteString, forKey: "serverURL")
+                self.d.set("server", forKey: "mode")
                 self.applySharing()
             }
         }
@@ -841,8 +1903,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         head.isEnabled = false
         menu.addItem(head)
         add("Berbagi aktif", #selector(toggleSharing), on: sharing)
+        let method = NSMenuItem(title: lanMode ? "Metode: Wi-Fi lokal" : "Metode: Server PasteLAN", action: nil, keyEquivalent: "")
+        let mm = NSMenu()
+        mm.autoenablesItems = false
+        for (title, action, on) in [("Server PasteLAN (internet, bisa di-install di HP)", #selector(useServerMode), !lanMode),
+                                    ("Wi-Fi lokal (tanpa server, HP di jaringan yang sama)", #selector(useLANMode), lanMode)] {
+            let it = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            it.target = self
+            it.state = on ? .on : .off
+            mm.addItem(it)
+        }
+        method.submenu = mm
+        menu.addItem(method)
 
         menu.addItem(.separator())
+        if lanMode { addLANSection() } else { addServerSection() }
+        addHistorySection()
+
+        menu.addItem(.separator())
+        add("Buka saat login", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled)
+        add("Cara pakai…", #selector(showHelp))
+        menu.addItem(updater.menuItem)
+        add("Uninstall PasteLAN…", #selector(uninstall))
+        menu.addItem(NSMenuItem(title: "Keluar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    func addServerSection() {
         let st = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
         st.isEnabled = false
         menu.addItem(st)
@@ -857,40 +1943,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             add("Atur server & login…", #selector(setupServer))
         }
+    }
 
+    func addLANSection() {
+        guard sharing else {
+            let st = NSMenuItem(title: "Berbagi dimatikan", action: nil, keyEquivalent: "")
+            st.isEnabled = false
+            menu.addItem(st)
+            return
+        }
+        let url = lan.shareURL
+        let info: String
+        if lan.http.failed { info = "Server gagal berjalan: port \(lan.port)–\(lan.port + 11) sibuk." }
+        else if !lan.running { info = "Menyalakan server…" }
+        else if url == nil { info = "Mac belum terhubung ke Wi-Fi / jaringan lokal." }
+        else { info = "Scan dengan kamera HP (Wi-Fi yang sama)" }
+        let qr = NSMenuItem()
+        qr.view = qrView(url: url, info: info)
+        menu.addItem(qr)
+        if url != nil {
+            add("Salin link", #selector(copyLink))
+            let n = lan.connectedCount
+            let st = NSMenuItem(title: n > 0 ? "📱 \(n) perangkat terhubung" : "Belum ada perangkat terhubung", action: nil, keyEquivalent: "")
+            st.isEnabled = false
+            menu.addItem(st)
+        }
+        if lan.running {
+            // HP tidak bisa membuka halaman? Kalau di sini tidak muncul IP HP, permintaannya tidak sampai ke Mac
+            let text: String
+            if let p = lan.http.lastPeer {
+                let f = DateFormatter()
+                f.dateFormat = "HH.mm.ss"
+                text = "Koneksi masuk terakhir: \(p.host), \(f.string(from: p.time)) (\(p.note))"
+            } else {
+                text = "Belum ada koneksi masuk sejak server dimulai"
+            }
+            let lp = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+            lp.isEnabled = false
+            menu.addItem(lp)
+        }
+        add("Reset link (putuskan semua HP)…", #selector(resetLink))
+    }
+
+    func addHistorySection() {
         menu.addItem(.separator())
         let hist = NSMenuItem(title: "Riwayat", action: nil, keyEquivalent: "")
         let hm = NSMenu()
         hm.autoenablesItems = false
-        if server.items.isEmpty {
+        let entries: [(id: Int, title: String)] = lanMode
+            ? lan.store.items.reversed().map { ($0.id, $0.title) }
+            : server.items.reversed().map { ($0.id, $0.title(me: server.me)) }
+        if entries.isEmpty {
             let e = NSMenuItem(title: "Belum ada", action: nil, keyEquivalent: "")
             e.isEnabled = false
             hm.addItem(e)
         } else {
-            for c in server.items.reversed() {
-                let it = NSMenuItem(title: c.title(me: server.me), action: #selector(recopy(_:)), keyEquivalent: "")
+            for c in entries {
+                let it = NSMenuItem(title: c.title, action: #selector(recopy(_:)), keyEquivalent: "")
                 it.target = self
                 it.representedObject = c.id
                 it.toolTip = "Klik untuk menyalin lagi ke clipboard Mac"
                 hm.addItem(it)
             }
             hm.addItem(.separator())
-            let cl = NSMenuItem(title: "Hapus riwayat (semua perangkat)", action: #selector(clearHistory), keyEquivalent: "")
+            let cl = NSMenuItem(title: lanMode ? "Hapus riwayat" : "Hapus riwayat (semua perangkat)", action: #selector(clearHistory), keyEquivalent: "")
             cl.target = self
             hm.addItem(cl)
         }
         hist.submenu = hm
         menu.addItem(hist)
         add("Kirim clipboard Mac otomatis", #selector(toggleAutoSend), on: autoSend)
-        add("Kirim clipboard Mac sekarang", #selector(sendNow), enabled: sharing && loggedIn)
+        add("Kirim clipboard Mac sekarang", #selector(sendNow), enabled: sharing && (lanMode || loggedIn))
         add("Simpan juga gambar dari HP ke Unduhan", #selector(toggleSaveImages), on: d.bool(forKey: "saveImages"))
-
-        menu.addItem(.separator())
-        add("Buka saat login", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled)
-        add("Cara pakai…", #selector(showHelp))
-        menu.addItem(updater.menuItem)
-        add("Uninstall PasteLAN…", #selector(uninstall))
-        menu.addItem(NSMenuItem(title: "Keluar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
     @discardableResult
@@ -904,9 +2028,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// QR code + alamat, ditampilkan langsung di dalam menu
-    func qrView(url: String, info: String) -> NSView {
+    func qrView(url: String?, info: String) -> NSView {
         let w: CGFloat = 260, qr: CGFloat = 190
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: qr + 62))
+        let h: CGFloat = url == nil ? 44 : qr + 62
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
 
         let label = NSTextField(wrappingLabelWithString: info)
         label.font = .systemFont(ofSize: 11)
@@ -915,7 +2040,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         label.frame = NSRect(x: 14, y: 6, width: w - 28, height: 32)
         v.addSubview(label)
 
-        let addr = NSTextField(labelWithString: url.replacingOccurrences(of: "https://", with: ""))
+        guard let url else { return v }
+        // alamat tanpa kunci (#k=…) & tanpa https://
+        let shown = (url.components(separatedBy: "/#").first ?? url).replacingOccurrences(of: "https://", with: "")
+        let addr = NSTextField(labelWithString: shown)
         addr.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
         addr.alignment = .center
         addr.lineBreakMode = .byTruncatingMiddle
@@ -957,7 +2085,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sendClipboard()
     }
     @objc func recopy(_ s: NSMenuItem) {
-        guard let id = s.representedObject as? Int, let c = server.items.first(where: { $0.id == id }) else { return }
+        guard let id = s.representedObject as? Int else { return }
+        if lanMode {
+            guard let c = lan.store.clip(id) else { return }
+            if let text = c.text { clipboard.writeText(text) }
+            else if let data = c.data { _ = clipboard.writeImage(data, mime: c.mime) }
+            return
+        }
+        guard let c = server.items.first(where: { $0.id == id }) else { return }
         if let text = c.text { clipboard.writeText(text) }
         else if c.kind == "image" {
             server.image(id) { [weak self] data in
@@ -966,7 +2101,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     @objc func clearHistory() {
-        server.clearHistory() // semua perangkat menerima session baru → daftarnya dikosongkan
+        // semua perangkat menerima session baru → daftarnya dikosongkan
+        if lanMode { lan.clearHistory() } else { server.clearHistory() }
+    }
+    @objc func useServerMode() { setMode("server") }
+    @objc func useLANMode() { setMode("lan") }
+
+    func setMode(_ mode: String) {
+        guard d.string(forKey: "mode") != mode else { return }
+        d.set(mode, forKey: "mode")
+        applySharing()
+        if mode == "server", !loggedIn { setupServer() }
+    }
+    @objc func copyLink() {
+        guard let url = lan.shareURL else { return }
+        // link berisi kunci → jangan ikut Universal Clipboard (perangkat Apple lain) & tandai rahasia untuk clipboard manager
+        let pb = clipboard.pb
+        _ = pb.prepareForNewContents(with: .currentHostOnly)
+        pb.setString(url, forType: .string)
+        pb.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        clipboard.markOwnWrite()
+    }
+    /// Kunci baru + server Wi-Fi lokal dimulai ulang (port & IP dibaca ulang) → semua link lama tidak berlaku
+    @objc func resetLink() {
+        let a = NSAlert()
+        a.messageText = "Reset link PasteLAN?"
+        a.informativeText = "Link diganti dan server dimulai ulang. Semua HP yang terhubung akan terputus dan harus " +
+            "scan QR code yang baru.\n\nPakai ini juga kalau HP tidak bisa membuka halaman PasteLAN."
+        a.addButton(withTitle: "Reset link")
+        a.addButton(withTitle: "Batal")
+        NSApp.activate(ignoringOtherApps: true)
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        lan.resetLink()
     }
     @objc func toggleLogin() {
         do {
@@ -995,6 +2161,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Keamanan: semua lewat HTTPS. Isi clipboard hanya disimpan di memori server (maks 20 item, \
         hilang setelah 24 jam / saat server restart). Isi dari password manager tidak pernah dikirim. \
         Perangkat yang hilang bisa dicabut dari halaman PasteLAN → Pengaturan.
+
+        Tanpa server: menu → Metode → "Wi-Fi lokal". Mac dan HP harus di Wi-Fi yang sama (atau Mac memakai \
+        hotspot HP); scan QR code di menu. Isi dienkripsi dengan kunci di QR code. Wi-Fi kantor / kampus / \
+        publik sering memblokir antar-perangkat. "Reset link" memutus semua HP yang pernah terhubung.
         """
         NSApp.activate(ignoringOtherApps: true)
         a.runModal()
@@ -1023,6 +2193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func finishUninstall() {
+        lan.stop()
         Keychain.token = nil
         try? SMAppService.mainApp.unregister()
         if let id = Bundle.main.bundleIdentifier {
