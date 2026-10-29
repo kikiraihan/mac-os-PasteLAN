@@ -340,7 +340,7 @@ final class PasteServer {
         stop()
         self.base = base
         token = nil
-        let body = try? JSONSerialization.data(withJSONObject: ["password": password, "name": name])
+        let body = try? JSONSerialization.data(withJSONObject: ["password": password, "name": name, "client": "mac"])
         send(request("POST", "/api/login", body: body, type: "application/json")) { status, data, err in
             guard status == 200, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let t = j["token"] as? String else { return done(nil, PasteServer.errorText(data, status, err)) }
@@ -366,7 +366,7 @@ final class PasteServer {
         stop()
         self.base = base
         token = nil
-        let body = try? JSONSerialization.data(withJSONObject: ["code": code, "name": name])
+        let body = try? JSONSerialization.data(withJSONObject: ["code": code, "name": name, "client": "mac"])
         send(request("POST", "/api/pair/claim", body: body, type: "application/json")) { status, data, err in
             guard status == 200, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let t = j["token"] as? String else { return done(nil, PasteServer.errorText(data, status, err)) }

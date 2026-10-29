@@ -49,6 +49,13 @@
     if (/Android/.test(ua)) return 'HP Android';
     return 'Browser';
   }
+  // Jenis perangkat untuk server: "hp" (HP / tablet, termasuk iPad yang mengaku Mac) atau "browser" (komputer)
+  function clientKind() {
+    const ua = navigator.userAgent;
+    if (/iPhone|iPad|Android|Mobile/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return 'hp';
+    return 'browser';
+  }
+  const KINDS = { mac: 'Mac (menu bar)', hp: 'HP', browser: 'Browser' };
   function showLogin() {
     polling = false;
     if (ctrl) ctrl.abort();
@@ -81,7 +88,7 @@
     try {
       const j = await api('/api/login', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: $('password').value, name })
+        body: JSON.stringify({ password: $('password').value, name, client: clientKind() })
       });
       try { localStorage.setItem('pastelan-name', name); } catch (e) {}
       me = j.device.id;
@@ -263,7 +270,7 @@
       for (const d of j.devices) {
         const row = el('div', 'dev');
         const info = el('span', '', d.name + (d.current ? ' (perangkat ini)' : ''));
-        info.append(el('small', '', 'Terakhir aktif ' + new Date(d.lastSeen).toLocaleString('id-ID')));
+        info.append(el('small', '', (KINDS[d.kind] ? KINDS[d.kind] + ' · ' : '') + 'Terakhir aktif ' + new Date(d.lastSeen).toLocaleString('id-ID')));
         row.append(info);
         if (!d.current) {
           row.append(button('Cabut', 'ghost danger', async () => {
@@ -297,7 +304,7 @@
     try {
       const j = await api('/api/pair/claim', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, name })
+        body: JSON.stringify({ code, name, client: clientKind() })
       });
       me = j.device.id;
       toast('Perangkat ini sudah masuk ✓');

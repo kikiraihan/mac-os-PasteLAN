@@ -102,12 +102,13 @@ func (a *app) adminStatus(w http.ResponseWriter, r *http.Request) {
 	type dev struct {
 		ID       string `json:"id"`
 		Name     string `json:"name"`
+		Kind     string `json:"kind"`
 		Created  int64  `json:"created"`
 		LastSeen int64  `json:"lastSeen"`
 	}
 	devs := []dev{}
 	for _, x := range a.auth.list() {
-		devs = append(devs, dev{x.ID, x.Name, x.Created.UnixMilli(), x.LastSeen.UnixMilli()})
+		devs = append(devs, dev{x.ID, x.Name, x.Kind, x.Created.UnixMilli(), x.LastSeen.UnixMilli()})
 	}
 	count, bytes := a.store.stats()
 	writeJSON(w, http.StatusOK, map[string]any{
