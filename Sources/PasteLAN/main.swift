@@ -43,6 +43,13 @@ func symbol(_ name: String) -> NSImage? {
     return img
 }
 
+/// Ikon menu bar: SF Symbol sedikit lebih kecil dari default supaya pas di item selebar 18 pt
+func barIcon(_ name: String) -> NSImage? {
+    let img = symbol(name)?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
+    img?.isTemplate = true
+    return img
+}
+
 func fileExt(_ mime: String?) -> String {
     switch mime ?? "" {
     case "image/jpeg": return "jpg"
@@ -1882,8 +1889,9 @@ final class Updater: NSObject {
 
 // MARK: - Aplikasi
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSearchFieldDelegate {
-    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSTextFieldDelegate {
+    /// Lebar tetap & ikon kecil → ikon di menu bar tidak makan tempat (variableLength memberi jarak kiri-kanan lebih lebar)
+    let item = NSStatusBar.system.statusItem(withLength: 18)
     let menu = NSMenu()
     let d = UserDefaults.standard
     let updater = Updater()
@@ -1893,7 +1901,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
     let macName = computerName()
     let history = History()
     lazy var settings = SettingsWindow(app: self)
-    let searchField = NSSearchField(frame: NSRect(x: 14, y: 4, width: 272, height: 24))
+    /// Kotak cari di menu: teks polos tanpa bingkai (hanya ikon kaca pembesar + placeholder), setinggi satu baris menu
+    let searchField = NSTextField(frame: NSRect(x: 36, y: 3, width: 250, height: 18))
     var flashTimer: Timer?
     var menuOpen = false
     var lastDeleted: (clip: LocalClip, index: Int)? // untuk "Urungkan hapus" (satu clip terakhir)
@@ -1932,7 +1941,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
         history.limit = historyLimit
         history.onChange = { [weak self] in self?.historyChanged() }
         searchField.placeholderString = "Cari clip…"
-        searchField.sendsSearchStringImmediately = true
+        searchField.isBordered = false
+        searchField.isBezeled = false
+        searchField.drawsBackground = false
+        searchField.focusRingType = .none
+        searchField.font = .menuFont(ofSize: 0)
+        searchField.cell?.isScrollable = true
+        searchField.cell?.wraps = false
         searchField.delegate = self
         NSApp.mainMenu = editMenu()
 
@@ -1991,7 +2006,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
 
     func updateIcon() {
         guard let b = item.button else { return }
-        if flashTimer == nil { b.image = symbol("paperclip") }
+        if flashTimer == nil { b.image = barIcon("paperclip") }
         b.appearsDisabled = !sharing || (lanMode ? !lan.running : server.state != .connected)
         settings.reloadStatus()
     }
@@ -1999,7 +2014,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
     /// Ikon ✓ sebentar saat menerima sesuatu dari HP
     func flash() {
         flashTimer?.invalidate()
-        item.button?.image = symbol("checkmark.circle.fill")
+        item.button?.image = barIcon("checkmark.circle.fill")
         flashTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
             self?.flashTimer = nil
             self?.updateIcon()
@@ -2250,6 +2265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
         if syncActive { add("Kirim clipboard Mac sekarang", #selector(sendNow)) }
         menu.addItem(.separator())
         let sync = add(lanMode ? "Sinkron dengan HP (Wi-Fi lokal)" : "Sinkron dengan server & browser", #selector(toggleSharing), on: sharing)
+        sync.image = symbol("arrow.triangle.2.circlepath")
         sync.toolTip = "Matikan untuk memakai PasteLAN sebagai clipboard manager saja. Saat dinyalakan lagi, hanya copy baru yang dikirim."
         let manager = add("Clipboard manager…", #selector(openClipboardManager))
         manager.image = symbol("list.bullet.rectangle")
@@ -2266,7 +2282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
 
     /// Pencarian di menu: daftar clip disaring setiap huruf diketik (menu tetap terbuka)
     func controlTextDidChange(_ n: Notification) {
-        if (n.object as? NSSearchField) === searchField { refreshHistoryItems() }
+        if (n.object as? NSTextField) === searchField { refreshHistoryItems() }
     }
 
     /// Jumlah clip yang tampil langsung di menu; sisanya di submenu "Riwayat lainnya"
@@ -2274,7 +2290,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
     let historyTag = 77
 
     lazy var searchBox: NSView = {
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 32))
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        let glass = NSImageView(frame: NSRect(x: 14, y: 4, width: 16, height: 16))
+        glass.image = symbol("magnifyingglass")
+        glass.contentTintColor = .secondaryLabelColor
+        v.addSubview(glass)
         self.searchField.autoresizingMask = [.width]
         v.addSubview(self.searchField)
         return v
