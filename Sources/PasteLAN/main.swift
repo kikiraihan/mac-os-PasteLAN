@@ -2050,12 +2050,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         return main
     }
 
+    /// Lebar item mengikuti lebar gambar + 4 pt (2 pt kiri-kanan) → titik status tidak terpotong, tetap rapat
+    func setBarImage(_ img: NSImage?) {
+        item.button?.image = img
+        item.length = max(16, ceil((img?.size.width ?? 14) + 4))
+    }
+
     func updateIcon() {
         guard let b = item.button else { return }
         // ikon tidak pernah diredupkan: sinkron mati tetap terlihat normal (clipboard manager tetap jalan)
         let connected = lanMode ? lan.running : server.state == .connected
         let badge: BarBadge = !syncActive ? .none : connected ? .on : .waiting
-        if flashTimer == nil { b.image = barIcon("paperclip", badge: badge) }
+        if flashTimer == nil { setBarImage(barIcon("paperclip", badge: badge)) }
         b.appearsDisabled = false
         b.toolTip = "PasteLAN — " + (!syncActive ? "sinkron mati, hanya clipboard manager"
                                                  : connected ? "sinkron aktif" : "sinkron aktif, menghubungkan…")
@@ -2065,7 +2071,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     /// Ikon ✓ sebentar saat menerima sesuatu dari HP
     func flash() {
         flashTimer?.invalidate()
-        item.button?.image = barIcon("checkmark.circle.fill")
+        setBarImage(barIcon("checkmark.circle.fill"))
         flashTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
             self?.flashTimer = nil
             self?.updateIcon()
