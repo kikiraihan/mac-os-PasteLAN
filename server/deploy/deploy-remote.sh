@@ -23,7 +23,7 @@ case "$("${ssh_[@]}" "$TARGET" uname -m)" in
 	*) echo "Arsitektur VPS tidak didukung." >&2; exit 1 ;;
 esac
 
-v="$(grep -A1 CFBundleShortVersionString "$root/Resources/Info.plist" | sed -nE 's/.*<string>([^<]+)<\/string>.*/\1/p')"
+v="$(tr -d '\n' < "$root/Resources/Info.plist" | sed -nE 's/.*<key>CFBundleShortVersionString<\/key>[[:space:]]*<string>([^<]+)<\/string>.*/\1/p')"
 version="v$v+$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo lokal)"
 [ -z "$(git -C "$root" status --porcelain -- server 2>/dev/null)" ] || version="$version-dirty"
 

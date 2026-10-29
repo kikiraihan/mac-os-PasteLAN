@@ -61,7 +61,9 @@ jobs:
       - name: Versi
         id: ver
         run: |
-          v=$(grep -A1 CFBundleShortVersionString Resources/Info.plist | sed -nE 's/.*<string>([^<]+)<\/string>.*/\1/p')
+          # plist dibaca sebagai satu baris: key & nilai bisa satu baris atau berbeda baris
+          v=$(tr -d '\n' < Resources/Info.plist | sed -nE 's/.*<key>CFBundleShortVersionString<\/key>[[:space:]]*<string>([^<]+)<\/string>.*/\1/p')
+          [[ "$v" =~ ^[0-9]+(\.[0-9]+)*$ ]] || { echo "::error::Versi tidak terbaca dari Info.plist: '$v'"; exit 1; }
           echo "version=v${v}+${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Build binary Linux (amd64 & arm64)
