@@ -2235,7 +2235,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
         menu.addItem(.separator())
         let sync = add(lanMode ? "Sinkron dengan HP (Wi-Fi lokal)" : "Sinkron dengan server & browser", #selector(toggleSharing), on: sharing)
         sync.toolTip = "Matikan untuk memakai PasteLAN sebagai clipboard manager saja. Saat dinyalakan lagi, hanya copy baru yang dikirim."
-        add("Clipboard manager…", #selector(openClipboardManager)).image = symbol("list.bullet.rectangle")
+        let manager = add("Clipboard manager…", #selector(openClipboardManager))
+        manager.image = symbol("list.bullet.rectangle")
         let pref = add("Pengaturan…", #selector(openSettings))
         pref.keyEquivalent = ","
         pref.image = symbol("gearshape")
@@ -2258,8 +2259,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
 
     lazy var searchBox: NSView = {
         let v = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 32))
-        searchField.autoresizingMask = [.width]
-        v.addSubview(searchField)
+        self.searchField.autoresizingMask = [.width]
+        v.addSubview(self.searchField)
         return v
     }()
 
@@ -2317,7 +2318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
         guard let first = menu.items.firstIndex(where: { $0.tag == historyTag }) else { return }
         for it in menu.items where it.tag == historyTag { menu.removeItem(it) }
         insertHistoryItems(at: first)
-        menu.items.first { $0.tag == historyTag + 1 }?.isEnabled = !history.items.isEmpty
+        menu.items.first(where: { $0.tag == historyTag + 1 })?.isEnabled = !history.items.isEmpty
     }
 
     func addServerSection() {
@@ -2824,7 +2825,7 @@ final class ClipboardPage: NSViewController, NSTableViewDataSource, NSTableViewD
         bottom.addView(copyButton, in: .trailing)
         bottom.addView(deleteButton, in: .trailing)
 
-        for x in [top, scroll, hint, bottom] {
+        for x in [top, scroll, hint, bottom] as [NSView] {
             x.translatesAutoresizingMaskIntoConstraints = false
             v.addSubview(x)
             x.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 20).isActive = true
@@ -3060,8 +3061,8 @@ final class SettingsWindow: NSObject {
         limitPopup.selectItem(withTag: app.historyLimit)
 
         // Koneksi & Tentang dibangun ulang hanya kalau isinya berubah
-        let sig = [app.lanMode, app.sharing, app.loggedIn, app.updater.hasUpdate, app.lan.shareURL != nil].map { $0 ? "1" : "0" }.joined()
-            + connectionLine + (app.serverURL?.absoluteString ?? "")
+        let flags: [Bool] = [app.lanMode, app.sharing, app.loggedIn, app.updater.hasUpdate, app.lan.shareURL != nil]
+        let sig = flags.map { $0 ? "1" : "0" }.joined() + connectionLine + (app.serverURL?.absoluteString ?? "")
         if sig != signature {
             signature = sig
             connection.set(connectionSections())
