@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>PasteLAN Admin</title>
+<link rel="icon" href="/icon-192.png">
+<link rel="stylesheet" href="/style.css">
+<script src="/admin.js" defer></script>
+</head>
+<body>
+<header><span id="dot" class="dot"></span><h1>PasteLAN Admin</h1><span id="status"></span></header>
+<main>
+  <form id="login" class="card" hidden>
+    <h2 class="title">Masuk admin</h2>
+    <p class="hint">Password admin = PASTELAN_ADMIN_PASSWORD di server (/etc/pastelan.env).</p>
+    <label>Password admin<input id="password" type="password" autocomplete="current-password" required></label>
+    <button id="loginBtn" type="submit">Masuk</button>
+    <div id="loginErr" class="err"></div>
+  </form>
+
+  <div id="app" hidden>
+    <h2>Tambah perangkat</h2>
+    <div class="card">
+      <p class="hint">Link setup sekali pakai: perangkat baru masuk tanpa password.
+        Mac: menu PasteLAN → "Atur server & login…" → tempel link. HP: buka link di browser.</p>
+      <div class="row"><button id="newLink" class="grow">Buat link setup</button></div>
+      <div id="linkBox" hidden>
+        <input id="link" readonly>
+        <div class="row"><button id="copyLink" class="grow">Salin link</button></div>
+        <div id="linkExp" class="hint"></div>
+      </div>
+    </div>
+
+    <h2>Riwayat clipboard</h2>
+    <form id="clipForm" class="card">
+      <div id="usage" class="hint"></div>
+      <label class="check"><input id="autoClear" type="checkbox"> Hapus otomatis isi clipboard yang sudah lama</label>
+      <label>Simpan selama
+        <span class="row inline"><input id="retention" type="number" min="1" required>
+          <select id="retentionUnit"><option value="1">menit</option><option value="60">jam</option><option value="1440">hari</option></select></span>
+      </label>
+      <label>Jumlah item maksimal (1–200)<input id="maxItems" type="number" min="1" max="200" required></label>
+      <label>Total memori maksimal, MB (1–1024)<input id="maxTotalMB" type="number" min="1" max="1024" required></label>
+      <label>Link setup berlaku, menit (1–60)<input id="setupLinkMinutes" type="number" min="1" max="60" required></label>
+      <p class="hint">Isi clipboard hanya di memori server: hilang saat server restart walau hapus otomatis dimatikan.
+        Item terlama dibuang kalau jumlah / memori melebihi batas.</p>
+      <div class="row">
+        <button type="submit" class="grow">Simpan</button>
+        <button id="clearItems" type="button" class="ghost danger">Hapus semua riwayat</button>
+      </div>
+    </form>
+
+    <h2>Login dengan password</h2>
+    <form id="pwForm" class="card">
+      <label class="check"><input id="passwordLogin" type="checkbox"> Perangkat boleh masuk dengan password bersama</label>
+      <div id="pwInfo" class="hint"></div>
+      <label>Password perangkat baru (min. 12 karakter, beda dari password admin)
+        <input id="newPassword" type="password" autocomplete="new-password" minlength="12"></label>
+      <div class="row"><button type="submit" class="grow">Simpan</button></div>
+    </form>
+
+    <h2>Perangkat</h2>
+    <div class="card">
+      <div id="devices"></div>
+      <div class="row"><button id="revokeAll" class="ghost danger">Cabut semua perangkat</button></div>
+    </div>
+
+    <div class="row">
+      <a class="btn ghost grow" href="/">Buka PasteLAN</a>
+      <button id="logout" class="ghost danger">Keluar admin</button>
+    </div>
+    <p id="version" class="hint"></p>
+  </div>
+</main>
+<div id="toast"></div>
+</body>
+</html>

@@ -25,14 +25,21 @@ const (
 	globalLockout  = 15 * time.Minute // … → login baru ditutup sementara (perangkat yang sudah login tetap jalan)
 	pairTTL        = 5 * time.Minute  // kode QR pairing berlaku 5 menit, sekali pakai
 	maxPairCodes   = 10
+	adminTTL       = 12 * time.Hour // sesi admin (hanya di memori; server restart → login admin lagi)
+	maxAdminSess   = 10
 )
 
 var (
 	errBadPassword = errors.New("password salah")
 	errLocked      = errors.New("terlalu banyak percobaan, coba lagi nanti")
 	errTooMany     = errors.New("terlalu banyak perangkat, cabut perangkat lama dulu")
-	errBadPair     = errors.New("kode QR tidak berlaku (kedaluwarsa / sudah dipakai), minta QR baru atau masuk dengan password")
+	errBadPair     = errors.New("kode QR / link setup tidak berlaku (kedaluwarsa / sudah dipakai), minta yang baru")
+	errPwDisabled  = errors.New("login dengan password dimatikan admin, minta link setup / scan QR dari perangkat yang sudah masuk")
+	errNoAdmin     = errors.New("halaman admin belum aktif: isi PASTELAN_ADMIN_PASSWORD di server lalu restart")
 )
+
+// hashSlots membatasi hitungan PBKDF2 yang berjalan bersamaan (mahal, ±0,2 detik) → tebakan beruntun tidak menghabiskan CPU
+var hashSlots = make(chan struct{}, 2)
 
 // device = satu perangkat yang sudah login. Token aslinya hanya dikirim sekali ke perangkat;
 // server hanya menyimpan hash SHA-256-nya.
@@ -52,7 +59,12 @@ type failInfo struct {
 
 type auth struct {
 	mu        sync.Mutex
-	pwHash    [32]byte
+	pwHash    [32]byte // SHA-256 PASTELAN_PASSWORD (hanya di memori); dipakai kalau admin belum mengganti password
+	hasEnvPw  bool
+	adminHash [32]byte // SHA-256 PASTELAN_ADMIN_PASSWORD (hanya di memori)
+	hasAdmin  bool
+	admins    map[string]time.Time // hash token sesi admin → kedaluwarsa (hanya di memori)
+	settings  *settingsStore
 	file      string
 	devices   map[string]*device   // kunci: hash token
 	pairs     map[string]time.Time // hash kode pairing → kedaluwarsa (hanya di memori)
@@ -61,8 +73,10 @@ type auth struct {
 	globalTil time.Time
 }
 
-func newAuth(password, file string) (*auth, error) {
-	a := &auth{pwHash: sha256.Sum256([]byte(password)), file: file,
+func newAuth(password, adminPassword, file string, st *settingsStore) (*auth, error) {
+	a := &auth{pwHash: sha256.Sum256([]byte(password)), hasEnvPw: password != "",
+		adminHash: sha256.Sum256([]byte(adminPassword)), hasAdmin: adminPassword != "",
+		admins: map[string]time.Time{}, settings: st, file: file,
 		devices: map[string]*device{}, fails: map[string]*failInfo{}, pairs: map[string]time.Time{}}
 	b, err := os.ReadFile(file)
 	if errors.Is(err, os.ErrNotExist) {
@@ -87,6 +101,11 @@ func randomString(n int) string {
 		panic(err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func sha256Equal(s string, h [32]byte) bool {
+	x := sha256.Sum256([]byte(s))
+	return subtle.ConstantTimeCompare(x[:], h[:]) == 1
 }
 
 func hashToken(t string) string {
@@ -119,17 +138,47 @@ func cleanName(s string) string {
 	return s
 }
 
+// isLocked: IP ini / semua login baru sedang dikunci
+func (a *auth) isLocked(key string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.locked(key, time.Now())
+}
+
+// devicePasswordOK: password bersama perangkat (hash dari admin, atau PASTELAN_PASSWORD). Dipanggil tanpa a.mu.
+func (a *auth) devicePasswordOK(set settings, password string) bool {
+	if set.DevicePassword != "" {
+		hashSlots <- struct{}{}
+		defer func() { <-hashSlots }()
+		return checkPasswordHash(password, set.DevicePassword)
+	}
+	h := sha256.Sum256([]byte(password))
+	return a.hasEnvPw && subtle.ConstantTimeCompare(h[:], a.pwHash[:]) == 1
+}
+
+// passwordLoginAvailable: login perangkat dengan password diizinkan admin dan passwordnya sudah ada
+func (a *auth) passwordLoginAvailable() bool {
+	set := a.settings.get()
+	return set.PasswordLogin && (set.DevicePassword != "" || a.hasEnvPw)
+}
+
 // login memeriksa password lalu membuat token baru untuk perangkat ini
 func (a *auth) login(ip, password, name string) (string, *device, error) {
+	key := limitKey(ip)
+	if a.isLocked(key) {
+		return "", nil, errLocked
+	}
+	if !a.passwordLoginAvailable() {
+		return "", nil, errPwDisabled
+	}
+	ok := a.devicePasswordOK(a.settings.get(), password) // di luar a.mu: PBKDF2 lambat
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := time.Now()
-	key := limitKey(ip)
 	if a.locked(key, now) {
 		return "", nil, errLocked
 	}
-	h := sha256.Sum256([]byte(password))
-	if subtle.ConstantTimeCompare(h[:], a.pwHash[:]) != 1 {
+	if !ok {
 		a.recordFail(key, now)
 		return "", nil, errBadPassword
 	}
@@ -137,9 +186,67 @@ func (a *auth) login(ip, password, name string) (string, *device, error) {
 	return a.newDevice(name, now)
 }
 
-// newPair membuat kode pairing sekali pakai (untuk QR di Mac): perangkat baru bisa login tanpa mengetik password.
-// Server hanya menyimpan hash kodenya.
-func (a *auth) newPair() (string, time.Time) {
+// adminLogin memeriksa PASTELAN_ADMIN_PASSWORD lalu membuat sesi admin. Salah password dihitung bersama login perangkat.
+func (a *auth) adminLogin(ip, password string) (string, error) {
+	if !a.hasAdmin {
+		return "", errNoAdmin
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	key := limitKey(ip)
+	if a.locked(key, now) {
+		return "", errLocked
+	}
+	h := sha256.Sum256([]byte(password))
+	if subtle.ConstantTimeCompare(h[:], a.adminHash[:]) != 1 {
+		a.recordFail(key, now)
+		return "", errBadPassword
+	}
+	delete(a.fails, key)
+	for t, exp := range a.admins {
+		if now.After(exp) {
+			delete(a.admins, t)
+		}
+	}
+	for len(a.admins) >= maxAdminSess { // buang sesi yang paling cepat kedaluwarsa
+		var oldest string
+		for t, exp := range a.admins {
+			if oldest == "" || exp.Before(a.admins[oldest]) {
+				oldest = t
+			}
+		}
+		delete(a.admins, oldest)
+	}
+	token := randomString(32)
+	a.admins[hashToken(token)] = now.Add(adminTTL)
+	return token, nil
+}
+
+func (a *auth) checkAdmin(token string) bool {
+	if token == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	h := hashToken(token)
+	exp, ok := a.admins[h]
+	if ok && time.Now().After(exp) {
+		delete(a.admins, h)
+		return false
+	}
+	return ok
+}
+
+func (a *auth) adminLogout(token string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.admins, hashToken(token))
+}
+
+// newPair membuat kode pairing sekali pakai (QR dari Mac / link setup dari admin): perangkat baru bisa login tanpa
+// mengetik password. Server hanya menyimpan hash kodenya.
+func (a *auth) newPair(ttl time.Duration) (string, time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := time.Now()
@@ -158,7 +265,7 @@ func (a *auth) newPair() (string, time.Time) {
 		delete(a.pairs, oldest)
 	}
 	code := randomString(32)
-	exp := now.Add(pairTTL)
+	exp := now.Add(ttl)
 	a.pairs[hashToken(code)] = exp
 	return code, exp
 }
@@ -252,6 +359,19 @@ func (a *auth) check(token string) *device {
 	d.LastSeen = time.Now()
 	cp := *d
 	return &cp
+}
+
+// revokeAll mencabut semua perangkat (dari halaman admin)
+func (a *auth) revokeAll() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	old := a.devices
+	a.devices = map[string]*device{}
+	if err := a.save(); err != nil {
+		a.devices = old
+		return err
+	}
+	return nil
 }
 
 func (a *auth) revoke(id string) bool {

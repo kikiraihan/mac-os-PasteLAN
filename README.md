@@ -27,7 +27,10 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
   **muncul otomatis** di HP dalam ±1 detik. Tekan **Salin** / **Salin gambar**
 - **PWA**: install di iPhone & Android ("Install" / "Tambahkan ke Layar Utama"), tampil seperti aplikasi biasa
 - Bisa dipakai dari **banyak perangkat** sekaligus (HP, tablet, laptop lain); tiap perangkat login sekali
-- **Riwayat 20 item terakhir**; klik item di menu Mac untuk menyalinnya lagi
+- **Riwayat 20 item terakhir** (bisa diatur di halaman admin); klik item di menu Mac untuk menyalinnya lagi
+- **Hapus per item** atau **hapus semua** dari halaman web (ikut hilang di semua perangkat)
+- **Halaman admin** (`https://server/admin`): link setup untuk perangkat baru, kelola perangkat, password,
+  hapus otomatis & lama penyimpanan, batas jumlah item / memori
 - Mode **otomatis** atau **manual** ("Kirim clipboard Mac sekarang") di Mac
 - Opsi menyimpan gambar dari HP ke folder **Unduhan**
 - Buka saat login, update dari menu (bertanda tangan), uninstall dari menu
@@ -35,9 +38,11 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
 ## Cara pakai
 
 1. **Pasang server** di VPS Anda (sekali saja), lihat [Server](#server).
-2. **Mac**: klik ikon **⇄** di menu bar → **Atur server & login…** → isi alamat server dan password.
+2. **Mac**: buka `https://server-anda/admin` (password admin) → **Buat link setup**. Klik ikon **⇄** di menu bar →
+   **Atur server & login…** → tempel link itu (tanpa password). Bisa juga alamat server + password perangkat
+   kalau login dengan password diaktifkan di admin.
 3. **HP**: menu Mac → **Tambah HP (scan QR)…**, scan dengan kamera HP → HP langsung masuk **tanpa mengetik
-   password**. Lalu **Install** / **Tambahkan ke Layar Utama**. (Atau buka alamat server di HP dan masuk dengan password.)
+   password**. Lalu **Install** / **Tambahkan ke Layar Utama**. (Atau buka link setup dari admin di HP.)
 4. **HP → Mac**: tempel teks / pilih gambar, tekan **Kirim**, lalu ⌘V di Mac.
    **Mac → HP**: copy apa saja di Mac, isinya muncul di HP.
 
@@ -50,7 +55,7 @@ Pilih di menu **⇄ → Metode**. Hanya satu yang aktif; metode yang tidak dipak
 | Butuh | Server sendiri (VPS + domain) | Mac & HP di Wi-Fi yang sama (atau Mac memakai hotspot HP) |
 | Jarak | Di mana saja (internet) | Satu jaringan |
 | HP | PWA, bisa di-install; **Salin gambar** | Halaman web dari Mac (HTTP lokal); salin gambar dengan tekan lama |
-| Masuk | Scan QR dari Mac, atau password → token per perangkat | Scan QR (kunci 256-bit di link) |
+| Masuk | Link setup dari admin / scan QR dari Mac (opsional: password) → token per perangkat | Scan QR (kunci 256-bit di link) |
 | Keamanan | HTTPS | Isi dienkripsi ChaCha20-Poly1305 dengan kunci di QR |
 
 Mode Wi-Fi lokal:
@@ -74,15 +79,20 @@ Mode Wi-Fi lokal:
 - **QR sekali pakai**: "Tambah HP (scan QR)…" di Mac membuat kode acak 256-bit yang berlaku **5 menit** dan hanya
   untuk **satu** perangkat (server hanya menyimpan hash-nya; kode ada di `#pair=` sehingga tidak masuk log / Referer,
   dan langsung dihapus dari alamat setelah dipakai). Kode hanya dibuat saat diminta, bukan setiap menu dibuka.
-- **Password + token per perangkat**: password hanya dipakai sekali saat login. Setiap perangkat mendapat token acak
+- **Admin**: halaman `/admin` dengan password sendiri (`PASTELAN_ADMIN_PASSWORD`, hanya di server). Sesi admin di
+  cookie terpisah (`HttpOnly` + `Secure` + `SameSite=Strict`, 12 jam, hanya di memori). **Link setup** dari admin
+  sama seperti QR: kode acak 256-bit, sekali pakai, berlaku 10 menit (bisa diatur 1–60).
+- **Password perangkat (opsional) + token per perangkat**: login dengan password bisa dimatikan di admin. Password
+  yang dibuat dari admin disimpan sebagai hash PBKDF2-SHA256 (`settings.json`). Setiap perangkat mendapat token acak
   256-bit sendiri; server hanya menyimpan **hash**-nya. Perangkat yang hilang bisa **dicabut** dari
   Pengaturan di halaman PasteLAN (atau "Keluar" di perangkat itu).
   - Browser: token di cookie `HttpOnly` + `Secure` + `SameSite=Strict` (tidak bisa dibaca JavaScript).
   - Mac: token di **Keychain**.
-- **Batas percobaan login** (password atau kode QR): 5× salah dari satu IP → IP itu dikunci 15 menit; 100× salah per jam dari semua IP →
+- **Batas percobaan login** (password perangkat, password admin, atau kode QR / link setup): 5× salah dari satu IP → IP itu dikunci 15 menit; 100× salah per jam dari semua IP →
   login baru ditutup 15 menit (perangkat yang sudah login tetap jalan).
-- **Isi clipboard hanya di memori server**: maks 20 item / 150 MB, kedaluwarsa **24 jam**, hilang saat server
-  restart. Tidak pernah ditulis ke disk atau log. Pemilik server (Anda) secara teknis bisa melihat isinya.
+- **Isi clipboard hanya di memori server**: default maks 20 item / 150 MB, kedaluwarsa **24 jam** (diatur di admin;
+  hapus otomatis bisa dimatikan), selalu hilang saat server restart. Tidak pernah ditulis ke disk atau log. Pemilik
+  server (Anda) secara teknis bisa melihat isinya.
 - **Halaman web ketat**: Content-Security-Policy tanpa script inline / CDN, `X-Frame-Options: DENY`, `nosniff`,
   HSTS. Isi clipboard selalu ditampilkan sebagai teks (bukan HTML). Gambar dicek dari isinya
   (PNG/JPEG/GIF/WebP/HEIC; SVG ditolak).
@@ -102,10 +112,14 @@ Satu binary Go tanpa dependensi (halaman web ikut di dalamnya). Panduan lengkap:
 ```bash
 # di VPS (Linux): unduh pastelan-server-linux-amd64 (atau -arm64) dari Releases
 sudo install -m 755 pastelan-server-linux-amd64 /usr/local/bin/pastelan-server
-echo "PASTELAN_PASSWORD=$(openssl rand -base64 24)" | sudo tee /etc/pastelan.env && sudo chmod 600 /etc/pastelan.env
+echo "PASTELAN_ADMIN_PASSWORD=$(openssl rand -base64 24)" | sudo tee /etc/pastelan.env && sudo chmod 600 /etc/pastelan.env
+sudo cat /etc/pastelan.env   # catat password admin ini (contoh lengkap: server/deploy/pastelan.env.example)
 sudo cp server/deploy/pastelan.service /etc/systemd/system/ && sudo systemctl enable --now pastelan
 # HTTPS: pasang Caddy, salin server/deploy/Caddyfile (ganti domain), lalu: sudo systemctl reload caddy
 ```
+
+Lalu buka `https://domain-anda/admin` → **Buat link setup** → tempel di Mac. Server **tidak** ikut update otomatis:
+setelah rilis baru, perbarui binary-nya juga (lihat `server/README.md` → *Memperbarui server*).
 
 ## Instal aplikasi Mac
 
@@ -127,7 +141,7 @@ xcode-select --install   # sekali saja
 ./scripts/build.sh       # hasil: build/PasteLAN.app
 cp -R build/PasteLAN.app /Applications/ && open /Applications/PasteLAN.app
 
-cd server && go test ./... && go build -o pastelan-server .   # server (Go 1.22+)
+cd server && go test ./... && go build -o pastelan-server .   # server (Go 1.24+)
 ```
 
 ## Cara kerja (singkat)
@@ -136,7 +150,8 @@ cd server && go test ./... && go build -o pastelan-server .   # server (Go 1.22+
 |---|---|
 | Server | Go `net/http` (standard library saja), satu binary, halaman web di-`embed` |
 | Real-time | Long-polling (`GET /api/items?wait=1`, ditahan maks 25 detik) |
-| Login | Password → token per perangkat (hash SHA-256 di `devices.json`), cookie / Bearer |
+| Login | Link setup / QR sekali pakai atau password → token per perangkat (hash SHA-256 di `devices.json`), cookie / Bearer |
+| Admin | `/admin`, password dari environment; pengaturan di `settings.json` (0600) |
 | Halaman HP | HTML/CSS/JS biasa (tanpa framework / CDN) + service worker & manifest (PWA) |
 | Aplikasi Mac | Swift + AppKit, `URLSession`, token di Keychain, `NSPasteboard.changeCount` tiap 0,8 detik |
 | Wi-Fi lokal | Server HTTP di Mac (`NWListener`), halaman HP ditanam di aplikasi, ChaCha20-Poly1305 (CryptoKit ⇄ JS) |

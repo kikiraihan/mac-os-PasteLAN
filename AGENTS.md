@@ -40,12 +40,16 @@ Merge ke `main` dengan versi yang belum punya tag akan otomatis membuat tag `v<v
       AAD `PL1|req|…`, `PL1|body|…`, `PL1|resp|…`). Ubah format di kedua sisi sekaligus.
   - Server: `server/` (Go, standard library saja). Halaman web / PWA di `server/web/` (HTML/CSS/JS biasa,
     tanpa framework / CDN, di-`embed` ke binary). Cek: `cd server && gofmt -l . && go vet ./... && go test -race ./...`.
+    Halaman admin `/admin` (`web/admin.html` + `admin.js`, password `PASTELAN_ADMIN_PASSWORD`): link setup, perangkat,
+    password perangkat (opsional, hash PBKDF2 di `settings.json`), batas riwayat. Agen yang memasang server: baca
+    `server/AGENTS.md` (jangan salin password contoh dari `deploy/pastelan.env.example`).
 - Versi di `Resources/Info.plist` berlaku untuk keduanya (satu rilis = aplikasi Mac + binary server).
 - Rencana kerja ada di `_todo/` (satu folder per inisiatif: file sprint + `00-tracker.md`).
   Perbarui tracker setiap kali tugas selesai.
 - Ide yang ditunda / utang teknis ada di `_techdebt/`.
-- Keamanan (jangan dilonggarkan): HTTPS lewat reverse proxy; password → token per perangkat (server hanya simpan
-  hash); semua `/api/` wajib header `X-PasteLAN: 1`; cookie `HttpOnly` + `Secure` + `SameSite=Strict`;
+- Keamanan (jangan dilonggarkan): HTTPS lewat reverse proxy; link setup / QR / password → token per perangkat
+  (server hanya simpan hash); password admin & perangkat min. 12 karakter, bukan template; semua `/api/` wajib
+  header `X-PasteLAN: 1`; cookie `HttpOnly` + `Secure` + `SameSite=Strict`;
   CSP tanpa `unsafe-*` (jangan tambah script / style inline atau CDN); isi clipboard hanya di memori server dan
   selalu ditampilkan lewat `textContent`; jenis gambar dicek dari isi (tanpa SVG).
   Auto-update wajib tanda tangan Ed25519 (`scripts/sign-release.swift`). Jangan pernah meminta / menyimpan kunci privat.

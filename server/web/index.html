@@ -20,8 +20,8 @@
 <main>
   <form id="login" class="card" hidden>
     <h2 class="title">Masuk</h2>
-    <p class="hint">Masukkan password server PasteLAN (cukup sekali per perangkat), atau scan QR "Tambah HP" dari menu PasteLAN di Mac.</p>
-    <label>Password<input id="password" type="password" autocomplete="current-password" required></label>
+    <p id="loginHint" class="hint">Masukkan password server PasteLAN (cukup sekali per perangkat), atau scan QR "Tambah HP" dari menu PasteLAN di Mac.</p>
+    <label id="pwLabel">Password<input id="password" type="password" autocomplete="current-password" required></label>
     <label>Nama perangkat<input id="devname" maxlength="40" autocomplete="off"></label>
     <button id="loginBtn" type="submit">Masuk</button>
     <div id="loginErr" class="err"></div>
@@ -37,14 +37,13 @@
       </div>
       <div class="hint">Muncul di Mac & perangkat lain dalam ±1 detik. Gambar juga bisa ditempel langsung di kotak teks.</div>
     </div>
-    <h2>Clipboard</h2>
+    <div class="bar"><h2>Clipboard</h2><button id="clear" class="ghost danger">Hapus semua</button></div>
     <div id="list"></div>
     <details id="settings" class="card">
       <summary>Pengaturan</summary>
       <h3>Perangkat yang login</h3>
       <div id="devices"></div>
       <div class="row">
-        <button id="clear" class="ghost">Hapus riwayat</button>
         <button id="logout" class="ghost danger">Keluar dari perangkat ini</button>
       </div>
     </details>
