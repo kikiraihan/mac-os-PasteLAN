@@ -328,6 +328,21 @@ final class History {
         onChange?()
     }
 
+    /// Keluarkan satu clip (untuk "Urungkan hapus": clip + posisinya dikembalikan lewat restore)
+    func take(_ id: Int) -> (clip: LocalClip, index: Int)? {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return nil }
+        let c = items.remove(at: i)
+        onChange?()
+        return (c, i)
+    }
+
+    func restore(_ c: LocalClip, at index: Int) {
+        guard !items.contains(where: { $0.id == c.id }) else { return }
+        items.insert(c, at: min(index, items.count))
+        trim()
+        onChange?()
+    }
+
     func remove(_ ids: Set<Int>) {
         items.removeAll { ids.contains($0.id) }
         onChange?()
@@ -1881,6 +1896,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
     let searchField = NSSearchField(frame: NSRect(x: 14, y: 4, width: 272, height: 24))
     var flashTimer: Timer?
     var menuOpen = false
+    var lastDeleted: (clip: LocalClip, index: Int)? // untuk "Urungkan hapus" (satu clip terakhir)
 
     /// Sinkron dengan server / HP. Mati = hanya clipboard manager di Mac ini (riwayat tetap dicatat).
     var sharing: Bool { d.bool(forKey: "sharing") }
@@ -2270,6 +2286,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
         menu.addItem(search)
         insertHistoryItems(at: menu.numberOfItems)
         menu.addItem(.separator())
+        if let last = lastDeleted {
+            let undo = add("Urungkan hapus \"\(last.clip.title)\"", #selector(undoDelete))
+            undo.image = symbol("arrow.uturn.backward")
+        }
         let clear = add("Hapus riwayat…", #selector(clearHistory), enabled: !history.items.isEmpty)
         clear.tag = historyTag + 1
     }
@@ -2297,9 +2317,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
             let it = NSMenuItem(title: c.title, action: #selector(recopy(_:)), keyEquivalent: n < 10 ? "\(n)" : "")
             it.target = self
             it.representedObject = c.id
-            it.toolTip = "Dari \(c.source)" + (c.pending ? " · belum dikirim ke server / HP" : "") + " · klik untuk menyalin ke clipboard Mac"
+            it.toolTip = "Dari \(c.source)" + (c.pending ? " · belum dikirim ke server / HP" : "") +
+                " · klik untuk menyalin ke clipboard Mac, tahan ⌥ lalu klik untuk menghapus"
+            // tahan ⌥ → baris ini berganti jadi "Hapus" (alternate item: harus tepat setelah item utamanya,
+            // tombol pintas sama dengan modifier berbeda → ⌥⌘0–⌥⌘9 menghapus)
+            let del = NSMenuItem(title: "Hapus: \(c.title)", action: #selector(deleteClip(_:)), keyEquivalent: it.keyEquivalent)
+            del.keyEquivalentModifierMask = it.keyEquivalent.isEmpty ? [.option] : [.command, .option]
+            del.isAlternate = true
+            del.target = self
+            del.representedObject = c.id
+            del.image = symbol("trash")
+            del.toolTip = "Hapus dari riwayat Mac ini (tidak menghapus di server / HP)"
             if n < inlineClips {
                 put(it)
+                put(del)
             } else {
                 if more == nil {
                     let sub = NSMenu()
@@ -2310,7 +2341,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
                     more = sub
                 }
                 more?.addItem(it)
+                more?.addItem(del)
             }
+        }
+        if !list.isEmpty {
+            let tip = NSMenuItem(title: "Tahan ⌥ lalu klik clip untuk menghapusnya", action: nil, keyEquivalent: "")
+            tip.attributedTitle = NSAttributedString(string: tip.title, attributes: [
+                .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize), .foregroundColor: NSColor.tertiaryLabelColor])
+            tip.isEnabled = false
+            put(tip)
         }
     }
 
@@ -2481,6 +2520,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
         }
         history.bump(id)
     }
+    /// ⌥ + klik (atau ⌥⌘0–9): hapus satu clip dari riwayat Mac, tanpa konfirmasi; bisa diurungkan dari menu
+    @objc func deleteClip(_ s: NSMenuItem) {
+        guard let id = s.representedObject as? Int, let r = history.take(id) else { return }
+        lastDeleted = r
+    }
+    @objc func undoDelete() {
+        guard let r = lastDeleted else { return }
+        lastDeleted = nil
+        history.restore(r.clip, at: r.index)
+    }
     @objc func clearHistory() {
         let a = NSAlert()
         let remote = lanMode ? "HP" : "server"
@@ -2495,8 +2544,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
         switch a.runModal() {
         case .alertFirstButtonReturn:
             history.clear()
+            lastDeleted = nil
         case .alertThirdButtonReturn:
             history.clear()
+            lastDeleted = nil
             // semua perangkat menerima session baru → daftarnya dikosongkan
             if lanMode { lan.clearHistory() } else { server.clearHistory() }
         default: break
@@ -2563,7 +2614,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSear
         Perangkat yang hilang bisa dicabut dari halaman PasteLAN → Pengaturan.
 
         Riwayat: klik salah satu clip di bagian atas menu (atau tekan ⌘0–⌘9 saat menu terbuka) untuk menyalinnya \
-        lagi ke clipboard Mac. Klik kotak "Cari clip…" di menu untuk mencari. Jumlah clip yang diingat diatur di \
+        lagi ke clipboard Mac. Klik kotak "Cari clip…" di menu untuk mencari. \
+        Tahan ⌥ (Option) lalu klik sebuah clip (atau ⌥⌘0–⌥⌘9) untuk menghapusnya dari riwayat Mac; \
+        "Urungkan hapus" di menu mengembalikannya. Jumlah clip yang diingat diatur di \
         Pengaturan → Umum.
 
         Clipboard manager saja: matikan "Sinkron dengan server & browser" di menu. Semua copy tetap masuk riwayat Mac, \

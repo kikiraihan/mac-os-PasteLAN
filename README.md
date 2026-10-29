@@ -28,7 +28,8 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
 - **PWA**: install di iPhone & Android ("Install" / "Tambahkan ke Layar Utama"), tampil seperti aplikasi biasa
 - Bisa dipakai dari **banyak perangkat** sekaligus (HP, tablet, laptop lain); tiap perangkat login sekali
 - **Clipboard manager di Mac** (gaya Clipy): riwayat langsung di menu (default 15 clip, diatur di **Pengaturan… → Umum**),
-  klik item atau tekan **⌘0–⌘9** saat menu terbuka untuk menyalinnya lagi, plus kotak **Cari clip…**
+  klik item atau tekan **⌘0–⌘9** saat menu terbuka untuk menyalinnya lagi, plus kotak **Cari clip…**;
+  **tahan ⌥ lalu klik** (atau ⌥⌘0–⌥⌘9) untuk menghapus satu clip, bisa diurungkan dari menu
 - **Sinkron bisa dimatikan** dari menu: PasteLAN jadi clipboard manager saja. Saat dinyalakan lagi hanya copy baru
   yang dikirim; clip lama bisa dicentang lalu dikirim dari **Clipboard manager…** (tab Clipboard di Pengaturan)
 - **Pencarian clip** juga di halaman web (browser / HP)
