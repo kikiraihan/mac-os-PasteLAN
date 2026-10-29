@@ -116,7 +116,23 @@
   }
   function showEmpty() {
     if (!$('list').children.length) $('list').append(el('div', 'empty', 'Belum ada apa-apa. Copy sesuatu di Mac (⌘C), atau kirim dari sini.'));
+    filter();
   }
+  // ---------- pencarian (isi teks; gambar cocok dengan "gambar") ----------
+  function filter() {
+    const q = $('search').value.trim().toLowerCase();
+    let shown = 0, total = 0;
+    for (const c of $('list').children) {
+      if (c.searchText == null) continue;
+      total++;
+      const hit = !q || c.searchText.includes(q);
+      c.classList.toggle('hide', !hit);
+      if (hit) shown++;
+    }
+    $('noMatch').hidden = !q || !total || shown > 0;
+    $('noMatch').textContent = `Tidak ada clip yang cocok dengan "${$('search').value.trim()}".`;
+  }
+  $('search').addEventListener('input', filter);
   async function poll() {
     polling = true;
     while (polling) {
@@ -147,6 +163,7 @@
     if (empty) empty.remove();
     const card = el('div', 'card item');
     card.itemId = it.id;
+    card.searchText = (it.kind === 'text' ? it.text : 'gambar image ' + (it.mime || '')).toLowerCase();
     const meta = el('div', 'meta');
     const time = new Date(it.time).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
     meta.append(el('span', '', it.device === me ? 'Dari perangkat ini' : 'Dari ' + it.from), el('span', '', time));
@@ -194,6 +211,7 @@
     card.append(row);
     list.prepend(card);
     while (list.children.length > maxItems) removeCard(list.lastChild);
+    filter();
   }
 
   async function copyText(text) {
