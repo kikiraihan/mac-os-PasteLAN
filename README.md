@@ -27,8 +27,11 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
   **muncul otomatis** di HP dalam ±1 detik. Tekan **Salin** / **Salin gambar**
 - **PWA**: install di iPhone & Android ("Install" / "Tambahkan ke Layar Utama"), tampil seperti aplikasi biasa
 - Bisa dipakai dari **banyak perangkat** sekaligus (HP, tablet, laptop lain); tiap perangkat login sekali
-- **Riwayat 20 item terakhir** (bisa diatur di halaman admin) langsung di menu Mac (gaya Clipy): klik item atau
-  tekan **⌘0–⌘9** saat menu terbuka untuk menyalinnya lagi; pengaturan ada di submenu **Pengaturan**
+- **Riwayat clipboard di menu Mac (seperti CopyClip)**: setiap copy di Mac tercatat seketika, ditambah semua yang
+  dikirim dari HP / web. Klik item atau tekan **⌘0–⌘9** saat menu terbuka untuk menyalinnya lagi (item naik ke atas
+  dan ikut terkirim ke perangkat lain). Riwayat disimpan di Mac (50–500 clip, default 200; tetap ada setelah restart,
+  bisa dimatikan) di **Pengaturan → Riwayat**. Riwayat di server / web tetap 20 item terakhir (diatur di halaman
+  admin), hanya di memori server
 - **Hapus per item** atau **hapus semua** dari halaman web (ikut hilang di semua perangkat)
 - **Halaman admin** (`https://server/admin`, bisa dibuka nyaman di HP): link setup untuk perangkat baru, kelola
   perangkat, password perangkat, **ganti password admin**, hapus otomatis & lama penyimpanan, batas jumlah item / memori

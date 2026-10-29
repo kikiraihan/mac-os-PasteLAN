@@ -3,6 +3,7 @@
 //   • Mac login sekali dengan password server → token perangkat disimpan di Keychain
 //   • HP → Mac : kirim teks / gambar dari HP → langsung masuk clipboard Mac
 //   • Mac → HP : setiap copy di Mac muncul otomatis di HP, tinggal tekan "Salin"
+//   • Riwayat gaya CopyClip di menu bar: semua copy di Mac + kiriman HP / web, tersimpan di Mac
 // Build: ./scripts/build.sh  (butuh Xcode Command Line Tools)
 
 import Cocoa
@@ -57,7 +58,8 @@ func fileExt(_ mime: String?) -> String {
 /// Cuplikan satu baris isi clipboard untuk menu (gaya Clipy: teks apa adanya, dipotong dengan "…")
 func clipTitle(kind: String, text: String?, mime: String?, size: Int) -> String {
     if kind == "image" { return "🖼 Gambar \(fileExt(mime).uppercased()), \(byteString(size))" }
-    var line = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    // cukup awal teks (riwayat bisa berisi teks 2 MB, menu dibangun ulang setiap dibuka)
+    var line = String((text ?? "").prefix(300)).trimmingCharacters(in: .whitespacesAndNewlines)
         .components(separatedBy: .newlines).first ?? ""
     line = line.replacingOccurrences(of: "\t", with: " ")
     if line.count > 45 { line = String(line.prefix(45)) + "…" }
@@ -246,6 +248,205 @@ enum Keychain {
     }
 }
 
+// MARK: - Riwayat clipboard di Mac (gaya CopyClip, hanya Foundation)
+
+/// Riwayat semua yang di-copy di Mac + yang dikirim dari perangkat lain (HP / web), terbaru di depan. Inilah yang
+/// tampil di menu. Disimpan di ~/Library/Application Support/PasteLAN/History (folder 0700, file 0600) supaya tetap
+/// ada setelah restart (bisa dimatikan → hanya sementara di folder temp). Gambar disimpan sebagai file, bukan di
+/// memori. Isi rahasia (password manager) tidak pernah sampai ke sini (disaring Clipboard.read).
+final class ClipHistory {
+    struct Entry: Codable, Equatable {
+        let id: Int
+        let kind: String    // "text" / "image"
+        let text: String?
+        let mime: String?
+        let size: Int
+        let source: String  // "Mac ini" / nama perangkat pengirim
+        let fromMac: Bool
+        var date: Date
+        var remote: String? // kunci item dari perangkat lain ("<session>:<id>") → tidak ditambahkan dua kali
+        let digest: String? // sidik isi gambar (FNV-1a) → copy gambar yang sama tidak jadi dua item
+    }
+    private struct Saved: Codable { let nextID: Int; let entries: [Entry] }
+
+    static let limits = [50, 100, 200, 500]
+    static let maxImageBytes = 500 * 1024 * 1024 // total semua gambar di riwayat
+
+    private(set) var entries: [Entry] = []
+    private var nextID = 1
+    private let persistDir: URL // Application Support/PasteLAN/History
+    private let tempDir: URL    // dipakai kalau riwayat tidak disimpan
+    private var saveWork: DispatchWorkItem?
+    var onChange: (() -> Void)?
+
+    var limit: Int { didSet { trim(); changed() } }
+    var persist: Bool {
+        didSet {
+            guard persist != oldValue else { return }
+            moveImages(from: persist ? tempDir : persistDir, to: dir)
+            if persist { saveNow() } else { try? FileManager.default.removeItem(at: persistDir.appendingPathComponent("history.json")) }
+        }
+    }
+    var dir: URL { persist ? persistDir : tempDir }
+
+    init(dir: URL, limit: Int, persist: Bool) {
+        persistDir = dir
+        tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("PasteLAN-History", isDirectory: true)
+        self.limit = limit
+        self.persist = persist
+        try? FileManager.default.removeItem(at: tempDir) // sisa sesi sebelumnya (riwayat tidak disimpan)
+        if persist { load() }
+    }
+
+    // MARK: menambah
+
+    /// Copy baru di Mac. Isi yang sudah ada di riwayat dinaikkan ke atas (bukan item baru), seperti CopyClip.
+    @discardableResult
+    func addLocal(kind: String, text: String?, data: Data?, mime: String?) -> Entry? {
+        add(kind: kind, text: text, data: data, mime: mime, source: "Mac ini", fromMac: true, date: Date(), remote: nil)
+    }
+
+    /// Item dari perangkat lain (server / Wi-Fi lokal). nil kalau kunci ini sudah pernah ditambahkan.
+    @discardableResult
+    func addRemote(key: String, kind: String, text: String?, data: Data?, mime: String?, source: String, date: Date) -> Entry? {
+        guard !has(key) else { return nil }
+        return add(kind: kind, text: text, data: data, mime: mime, source: source, fromMac: false, date: date, remote: key)
+    }
+
+    func has(_ key: String) -> Bool { entries.contains { $0.remote == key } }
+
+    private func add(kind: String, text: String?, data: Data?, mime: String?, source: String, fromMac: Bool,
+                     date: Date, remote: String?) -> Entry? {
+        guard kind == "text" ? (text?.isEmpty == false) : (data?.isEmpty == false) else { return nil }
+        let digest = data.map(ClipHistory.fnv)
+        if let i = entries.firstIndex(where: { $0.kind == kind && $0.text == text && $0.digest == digest }) {
+            var e = entries.remove(at: i)
+            e.date = max(e.date, date)
+            if e.remote == nil { e.remote = remote }
+            insert(e)
+            changed()
+            return e
+        }
+        let e = Entry(id: nextID, kind: kind, text: text, mime: mime, size: data?.count ?? text?.utf8.count ?? 0,
+                      source: source, fromMac: fromMac, date: date, remote: remote, digest: digest)
+        nextID += 1
+        if let data {
+            prepareDir()
+            let url = file(e.id)
+            guard (try? data.write(to: url, options: .atomic)) != nil else { return nil }
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
+        insert(e)
+        trim()
+        changed()
+        return entries.contains(e) ? e : nil // item lama (tanggal jauh) bisa langsung terbuang oleh batas
+    }
+
+    /// Urut dari yang terbaru
+    private func insert(_ e: Entry) {
+        let i = entries.firstIndex { $0.date < e.date } ?? entries.count
+        entries.insert(e, at: i)
+    }
+
+    // MARK: memakai
+
+    func entry(_ id: Int) -> Entry? { entries.first { $0.id == id } }
+
+    /// Isi gambar (dibaca dari file saat dibutuhkan)
+    func data(_ id: Int) -> Data? { try? Data(contentsOf: file(id)) }
+
+    /// Dipilih dari menu → naik ke paling atas
+    func touch(_ id: Int) {
+        guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
+        var e = entries.remove(at: i)
+        e.date = Date()
+        entries.insert(e, at: 0)
+        changed()
+    }
+
+    func clear() {
+        for e in entries where e.kind == "image" { try? FileManager.default.removeItem(at: file(e.id)) }
+        entries.removeAll()
+        changed()
+    }
+
+    /// Uninstall: hapus semua file riwayat
+    func wipe() {
+        saveWork?.cancel()
+        entries.removeAll()
+        try? FileManager.default.removeItem(at: persistDir)
+        try? FileManager.default.removeItem(at: tempDir)
+    }
+
+    // MARK: batas & penyimpanan
+
+    private func trim() {
+        var bytes = 0
+        var keep: [Entry] = []
+        for e in entries {
+            let img = e.kind == "image" ? e.size : 0
+            if keep.count < limit, bytes + img <= ClipHistory.maxImageBytes {
+                keep.append(e)
+                bytes += img
+            } else if e.kind == "image" {
+                try? FileManager.default.removeItem(at: file(e.id))
+            }
+        }
+        entries = keep
+    }
+
+    private func file(_ id: Int) -> URL { dir.appendingPathComponent("img-\(id)") }
+
+    private func prepareDir() {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    }
+
+    private func moveImages(from: URL, to: URL) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: to, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        for e in entries where e.kind == "image" {
+            let src = from.appendingPathComponent("img-\(e.id)"), dst = to.appendingPathComponent("img-\(e.id)")
+            try? fm.removeItem(at: dst)
+            try? fm.moveItem(at: src, to: dst)
+        }
+    }
+
+    private func changed() {
+        onChange?()
+        guard persist else { return }
+        // ditulis sebentar kemudian (beberapa perubahan beruntun → satu kali tulis)
+        saveWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.saveNow() }
+        saveWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: w)
+    }
+
+    func saveNow() {
+        saveWork?.cancel()
+        guard persist, let data = try? JSONEncoder().encode(Saved(nextID: nextID, entries: entries)) else { return }
+        prepareDir()
+        let url = persistDir.appendingPathComponent("history.json")
+        try? data.write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private func load() {
+        guard let data = try? Data(contentsOf: persistDir.appendingPathComponent("history.json")),
+              let s = try? JSONDecoder().decode(Saved.self, from: data) else { return }
+        nextID = s.nextID
+        // gambar yang filenya hilang dibuang dari daftar
+        entries = s.entries.filter { $0.kind != "image" || FileManager.default.fileExists(atPath: file($0.id).path) }
+        trim()
+    }
+
+    /// FNV-1a 64-bit (stabil antar-jalan, tidak seperti Hasher) — cukup untuk mengenali gambar yang sama
+    static func fnv(_ d: Data) -> String {
+        var h: UInt64 = 0xcbf29ce484222325
+        d.withUnsafeBytes { for b in $0 { h = (h ^ UInt64(b)) &* 0x100000001b3 } }
+        return String(h, radix: 16)
+    }
+}
+
 // MARK: - Server PasteLAN (klien HTTP, hanya Foundation)
 
 /// Satu item clipboard di server (isi gambar diambil terpisah lewat /api/image/<id>)
@@ -257,6 +458,7 @@ struct Clip: Decodable {
     let size: Int
     let from: String   // nama perangkat pengirim
     let device: String // id perangkat pengirim
+    let time: Double?  // ms sejak epoch (server ≥ 1.0.0)
 
     /// Cuplikan satu baris untuk daftar riwayat di menu
     var title: String { clipTitle(kind: kind, text: text, mime: mime, size: size) }
@@ -280,7 +482,7 @@ final class PasteServer {
     var onUnauthorized: (() -> Void)?   // token dicabut / tidak berlaku lagi
 
     private let http: URLSession
-    private var session = ""   // id session server: berubah saat server restart / riwayat dihapus
+    private(set) var session = "" // id session server: berubah saat server restart / riwayat dihapus
     private var after = 0
     private var rev = -1       // penanda penghapusan item di server (-1 = belum tahu)
     private var primed = false // item yang sudah ada sebelum tersambung tidak ditempel ke clipboard
@@ -1723,6 +1925,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let server = PasteServer()
     let clipboard = Clipboard()
     lazy var lan = LANServer(clipboard: clipboard)
+    /// Riwayat gaya CopyClip: semua copy di Mac + kiriman perangkat lain; inilah yang tampil di menu
+    lazy var history = ClipHistory(
+        dir: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("PasteLAN/History", isDirectory: true),
+        limit: d.integer(forKey: "historyLimit"), persist: d.bool(forKey: "historyPersist"))
+    var fetching = Set<String>() // gambar dari server yang sedang diunduh untuk riwayat
     let macName = computerName()
     var flashTimer: Timer?
 
@@ -1734,7 +1942,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lanMode: Bool { d.string(forKey: "mode") == "lan" }
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        d.register(defaults: ["sharing": true, "autoSend": true, "saveImages": false, "mode": "server"])
+        d.register(defaults: ["sharing": true, "autoSend": true, "saveImages": false, "mode": "server",
+                              "historyLimit": 200, "menuClips": 20, "historyPersist": true])
         d.removeObject(forKey: "token") // link Wi-Fi lokal lama (v0.1.x, token di ?t=) tidak berlaku lagi
 
         item.autosaveName = "PasteLAN" // posisi ikon diingat
@@ -1744,12 +1953,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = menu
 
         server.configure(base: serverURL, token: Keychain.token)
-        server.onChange = { [weak self] in self?.updateIcon() }
+        server.onChange = { [weak self] in
+            self?.updateIcon()
+            self?.syncServerHistory()
+        }
         server.onIncoming = { [weak self] c in self?.receive(c) }
         server.onUnauthorized = { [weak self] in self?.loginExpired() }
         lan.http.onChange = { [weak self] in self?.updateIcon() }
         lan.onPhone = { [weak self] c in self?.receivedFromLAN(c) }
-        clipboard.onChange = { [weak self] in self?.sendClipboard() }
+        clipboard.onChange = { [weak self] in self?.copiedOnMac() }
 
         applySharing()
         updater.start()
@@ -1768,6 +1980,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Riwayat ditulis ke disk sebentar setelah berubah → pastikan tersimpan saat aplikasi ditutup
+    func applicationWillTerminate(_ n: Notification) {
+        history.saveNow()
+    }
+
     // MARK: berbagi
 
     /// Hanya satu metode yang jalan: saat memakai server, port lokal di Mac tertutup (dan sebaliknya)
@@ -1783,7 +2000,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             server.stop()
             lan.stop()
         }
-        if active, autoSend { clipboard.startWatching() } else { clipboard.stopWatching() }
+        clipboard.startWatching() // selalu: setiap copy di Mac masuk riwayat, walau berbagi mati / belum login
         updateIcon()
     }
 
@@ -1803,12 +2020,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    func sendClipboard() {
-        guard sharing, let c = clipboard.read() else { return }
+    /// Setiap copy di Mac (⌘C): catat di riwayat, lalu kirim ke perangkat lain kalau "Kirim clipboard Mac otomatis"
+    func copiedOnMac() {
+        guard let c = clipboard.read() else { return } // kosong / rahasia (password manager) → tidak dicatat
+        history.addLocal(kind: c.kind, text: c.text, data: c.data, mime: c.mime)
+        if autoSend { sendClipboard(c) }
+    }
+
+    func sendClipboard(_ content: PasteContent? = nil) {
+        guard sharing, let c = content ?? clipboard.read() else { return }
         if lanMode { return lan.add(c) }
         guard loggedIn else { return }
         if let text = c.text { server.sendText(text) }
         else if let data = c.data { server.sendImage(data) }
+    }
+
+    func serverKey(_ c: Clip) -> String { "\(server.session):\(c.id)" }
+
+    func clipDate(_ c: Clip) -> Date { c.time.map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date() }
+
+    /// Riwayat server → riwayat Mac: item dari perangkat lain (HP / web) yang belum ada ditambahkan, termasuk yang
+    /// sudah ada di server sebelum Mac tersambung. Item dari Mac ini sendiri sudah tercatat saat di-copy.
+    func syncServerHistory() {
+        for c in server.items where c.device != server.me {
+            let key = serverKey(c)
+            guard !history.has(key), !fetching.contains(key) else { continue }
+            if c.kind == "text" {
+                history.addRemote(key: key, kind: "text", text: c.text, data: nil, mime: nil, source: c.from, date: clipDate(c))
+            } else if c.kind == "image" {
+                fetching.insert(key)
+                server.image(c.id) { [weak self] data in
+                    self?.fetching.remove(key)
+                    guard let self, let data else { return }
+                    self.history.addRemote(key: key, kind: "image", text: nil, data: data, mime: c.mime, source: c.from, date: self.clipDate(c))
+                }
+            }
+        }
     }
 
     /// Item baru dari perangkat lain → langsung masuk clipboard Mac
@@ -1817,8 +2064,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             clipboard.writeText(text)
             flash()
         } else if c.kind == "image" {
+            let key = serverKey(c)
+            fetching.insert(key) // satu unduhan untuk clipboard sekaligus riwayat
             server.image(c.id) { [weak self] data in
-                guard let self, let data, self.clipboard.writeImage(data, mime: c.mime) else { return }
+                self?.fetching.remove(key)
+                guard let self, let data else { return }
+                self.history.addRemote(key: key, kind: "image", text: nil, data: data, mime: c.mime, source: c.from, date: self.clipDate(c))
+                guard self.clipboard.writeImage(data, mime: c.mime) else { return }
                 if self.d.bool(forKey: "saveImages") { self.saveToDownloads(data, mime: c.mime) }
                 self.flash()
             }
@@ -1827,6 +2079,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Item dari HP lewat Wi-Fi lokal (sudah masuk clipboard Mac)
     func receivedFromLAN(_ c: LANClip) {
+        history.addRemote(key: "lan:\(c.id):\(Int(c.time.timeIntervalSince1970))", kind: c.kind, text: c.text, data: c.data,
+                          mime: c.mime, source: "HP", date: c.time)
         if c.kind == "image", let data = c.data, d.bool(forKey: "saveImages") { saveToDownloads(data, mime: c.mime) }
         flash()
     }
@@ -2006,16 +2260,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(NSMenuItem(title: "Keluar PasteLAN", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
-    /// Jumlah clip yang tampil langsung di menu; sisanya di submenu "Riwayat lainnya"
-    let inlineClips = 20
+    /// Jumlah clip yang tampil langsung di menu (Pengaturan → Riwayat); sisanya di submenu "Riwayat lainnya"
+    var inlineClips: Int { d.integer(forKey: "menuClips") }
 
     func addHistorySection() {
         let head = NSMenuItem(title: "Pilih clip untuk disalin ke clipboard", action: nil, keyEquivalent: "")
         head.isEnabled = false
         menu.addItem(head)
-        let entries: [(id: Int, title: String, tip: String)] = lanMode
-            ? lan.store.items.reversed().map { ($0.id, $0.title, $0.source) }
-            : server.items.reversed().map { ($0.id, $0.title, $0.source(me: server.me)) }
+        // riwayat Mac (gaya CopyClip): copy di Mac + kiriman HP / web, terbaru di atas
+        let rel = RelativeDateTimeFormatter()
+        rel.unitsStyle = .short
+        let entries: [(id: Int, title: String, tip: String)] = history.entries.map {
+            ($0.id, clipTitle(kind: $0.kind, text: $0.text, mime: $0.mime, size: $0.size),
+             "Dari \($0.source), \(rel.localizedString(for: $0.date, relativeTo: Date()))")
+        }
         if entries.isEmpty {
             let e = NSMenuItem(title: "Belum ada riwayat. Copy sesuatu di Mac atau kirim dari HP.", action: nil, keyEquivalent: "")
             e.isEnabled = false
@@ -2042,7 +2300,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         menu.addItem(.separator())
-        add(lanMode ? "Hapus semua riwayat" : "Hapus semua riwayat (semua perangkat)", #selector(clearHistory), enabled: !entries.isEmpty)
+        add("Hapus semua riwayat…", #selector(clearHistory), enabled: !entries.isEmpty || !server.items.isEmpty || !lan.store.items.isEmpty)
     }
 
     func addServerSection() {
@@ -2124,6 +2382,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add("Kirim clipboard Mac otomatis", #selector(toggleAutoSend), on: autoSend, to: pm)
         add("Kirim clipboard Mac sekarang", #selector(sendNow), enabled: sharing && (lanMode || loggedIn), to: pm)
         add("Simpan juga gambar dari HP ke Unduhan", #selector(toggleSaveImages), on: d.bool(forKey: "saveImages"), to: pm)
+
+        // Riwayat (seperti preferensi CopyClip): berapa yang diingat, berapa yang tampil di menu, simpan di disk
+        let hist = NSMenuItem(title: "Riwayat", action: nil, keyEquivalent: "")
+        let hm = NSMenu()
+        hm.autoenablesItems = false
+        let rem = NSMenuItem(title: "Ingat", action: nil, keyEquivalent: "")
+        rem.isEnabled = false
+        hm.addItem(rem)
+        for n in ClipHistory.limits {
+            let it = add("  \(n) clip terakhir", #selector(setHistoryLimit(_:)), on: history.limit == n, to: hm)
+            it.tag = n
+        }
+        hm.addItem(.separator())
+        let show = NSMenuItem(title: "Tampilkan di menu", action: nil, keyEquivalent: "")
+        show.isEnabled = false
+        hm.addItem(show)
+        for n in [10, 20, 30, 50] {
+            let it = add("  \(n) clip", #selector(setMenuClips(_:)), on: inlineClips == n, to: hm)
+            it.tag = n
+        }
+        hm.addItem(.separator())
+        add("Simpan riwayat di Mac (tetap ada setelah restart)", #selector(toggleHistoryPersist), on: history.persist, to: hm)
+        hist.submenu = hm
+        pm.addItem(hist)
 
         pm.addItem(.separator())
         if lanMode {
@@ -2219,25 +2501,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         sendClipboard()
     }
+    /// Clip dipilih dari menu → masuk clipboard Mac dan naik ke paling atas riwayat (seperti CopyClip). Kalau isinya
+    /// sudah tidak ada di riwayat server (mis. kedaluwarsa), dikirim lagi supaya perangkat lain juga melihatnya.
     @objc func recopy(_ s: NSMenuItem) {
-        guard let id = s.representedObject as? Int else { return }
-        if lanMode {
-            guard let c = lan.store.clip(id) else { return }
-            if let text = c.text { clipboard.writeText(text) }
-            else if let data = c.data { _ = clipboard.writeImage(data, mime: c.mime) }
-            return
+        guard let id = s.representedObject as? Int, let e = history.entry(id) else { return }
+        var content: PasteContent?
+        if e.kind == "text", let text = e.text {
+            clipboard.writeText(text)
+            content = PasteContent(kind: "text", text: text, data: nil, mime: nil)
+        } else if e.kind == "image", let data = history.data(id), clipboard.writeImage(data, mime: e.mime) {
+            content = PasteContent(kind: "image", text: nil, data: data, mime: e.mime)
         }
-        guard let c = server.items.first(where: { $0.id == id }) else { return }
-        if let text = c.text { clipboard.writeText(text) }
-        else if c.kind == "image" {
-            server.image(id) { [weak self] data in
-                if let data { _ = self?.clipboard.writeImage(data, mime: c.mime) }
-            }
-        }
+        guard let content else { return }
+        history.touch(id)
+        if autoSend, !sharedNow(content) { sendClipboard(content) }
     }
+
+    /// Isi ini masih ada di riwayat server / Wi-Fi lokal (perangkat lain sudah bisa melihatnya)
+    func sharedNow(_ c: PasteContent) -> Bool {
+        if lanMode { return lan.store.items.contains { $0.kind == c.kind && $0.text == c.text && $0.data == c.data } }
+        return server.items.contains { $0.kind == c.kind && (c.kind == "text" ? $0.text == c.text : $0.size == c.data?.count) }
+    }
+
     @objc func clearHistory() {
+        let a = NSAlert()
+        a.messageText = "Hapus semua riwayat?"
+        a.informativeText = lanMode
+            ? "Riwayat di Mac ini dan di HP yang terhubung lewat Wi-Fi lokal dikosongkan."
+            : "Riwayat di Mac ini dan di server PasteLAN (semua perangkat) dikosongkan."
+        a.addButton(withTitle: "Hapus semua")
+        a.addButton(withTitle: "Batal")
+        NSApp.activate(ignoringOtherApps: true)
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        history.clear()
         // semua perangkat menerima session baru → daftarnya dikosongkan
-        if lanMode { lan.clearHistory() } else { server.clearHistory() }
+        if lanMode { lan.clearHistory() } else if loggedIn { server.clearHistory() }
+    }
+    @objc func setHistoryLimit(_ s: NSMenuItem) {
+        d.set(s.tag, forKey: "historyLimit")
+        history.limit = s.tag
+    }
+    @objc func setMenuClips(_ s: NSMenuItem) { d.set(s.tag, forKey: "menuClips") }
+    @objc func toggleHistoryPersist() {
+        let on = !history.persist
+        d.set(on, forKey: "historyPersist")
+        history.persist = on
     }
     @objc func useServerMode() { setMode("server") }
     @objc func useLANMode() { setMode("lan") }
@@ -2299,8 +2607,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hilang setelah 24 jam / saat server restart). Isi dari password manager tidak pernah dikirim. \
         Perangkat yang hilang bisa dicabut dari halaman PasteLAN → Pengaturan.
 
-        Riwayat: klik salah satu clip di bagian atas menu (atau tekan ⌘0–⌘9 saat menu terbuka) untuk menyalinnya \
-        lagi ke clipboard Mac.
+        Riwayat (seperti CopyClip): setiap copy di Mac dan setiap kiriman dari HP / web tercatat di bagian atas menu. \
+        Klik salah satu clip (atau tekan ⌘0–⌘9 saat menu terbuka) untuk menyalinnya lagi ke clipboard Mac; clip itu \
+        naik ke atas dan ikut dikirim ke perangkat lain. Atur jumlahnya di Pengaturan → Riwayat.
 
         Tanpa server: menu → Pengaturan → Metode → "Wi-Fi lokal". Mac dan HP harus di Wi-Fi yang sama (atau Mac memakai \
         hotspot HP); scan QR code di menu → "Tambah HP". Isi dienkripsi dengan kunci di QR code. Wi-Fi kantor / kampus / \
@@ -2334,6 +2643,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func finishUninstall() {
         lan.stop()
+        history.wipe()
         Keychain.token = nil
         try? SMAppService.mainApp.unregister()
         if let id = Bundle.main.bundleIdentifier {
