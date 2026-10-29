@@ -44,9 +44,32 @@ func symbol(_ name: String) -> NSImage? {
 }
 
 /// Ikon menu bar: SF Symbol sedikit lebih kecil dari default supaya pas di item selebar 18 pt
-func barIcon(_ name: String) -> NSImage? {
-    let img = symbol(name)?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
-    img?.isTemplate = true
+/// Tanda kecil di kanan bawah ikon menu bar: titik penuh = sinkron aktif & tersambung, lingkaran = sinkron aktif
+/// tapi sedang menghubungkan / terputus, tanpa tanda = sinkron mati (clipboard manager saja)
+enum BarBadge { case none, on, waiting }
+
+func barIcon(_ name: String, badge: BarBadge = .none) -> NSImage? {
+    guard let base = symbol(name)?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)) else {
+        return nil
+    }
+    base.isTemplate = true
+    guard badge != .none else { return base }
+    let dot: CGFloat = 5.5
+    let size = NSSize(width: base.size.width + 3.5, height: max(base.size.height, 16))
+    let img = NSImage(size: size, flipped: false) { r in
+        base.draw(in: NSRect(x: 0, y: (r.height - base.size.height) / 2, width: base.size.width, height: base.size.height))
+        let rect = NSRect(x: r.width - dot, y: 1, width: dot, height: dot)
+        NSColor.black.set() // gambar template: warna asli diabaikan, macOS mewarnai sesuai tema menu bar
+        if badge == .on {
+            NSBezierPath(ovalIn: rect).fill()
+        } else {
+            let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 0.7, dy: 0.7))
+            ring.lineWidth = 1.2
+            ring.stroke()
+        }
+        return true
+    }
+    img.isTemplate = true
     return img
 }
 
@@ -1889,6 +1912,28 @@ final class Updater: NSObject {
 
 // MARK: - Aplikasi
 
+/// Kotak teks tanpa latar sama sekali: saat diketik, macOS memasang "field editor" (NSTextView) yang menggambar
+/// kotak latar gelap/terang sendiri → latarnya dimatikan setiap kali kotak ini mulai diedit
+final class PlainTextField: NSTextField {
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        clearEditorBackground()
+        return ok
+    }
+
+    override func textDidBeginEditing(_ n: Notification) {
+        super.textDidBeginEditing(n)
+        clearEditorBackground()
+    }
+
+    private func clearEditorBackground() {
+        guard let editor = currentEditor() as? NSTextView else { return }
+        editor.drawsBackground = false
+        editor.backgroundColor = .clear
+        editor.enclosingScrollView?.drawsBackground = false
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSTextFieldDelegate {
     /// Lebar tetap & ikon kecil → ikon di menu bar tidak makan tempat (variableLength memberi jarak kiri-kanan lebih lebar)
     let item = NSStatusBar.system.statusItem(withLength: 18)
@@ -1902,7 +1947,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     let history = History()
     lazy var settings = SettingsWindow(app: self)
     /// Kotak cari di menu: teks polos tanpa bingkai (hanya ikon kaca pembesar + placeholder), setinggi satu baris menu
-    let searchField = NSTextField(frame: NSRect(x: 36, y: 3, width: 250, height: 18))
+    let searchField = PlainTextField(frame: NSRect(x: 36, y: 3, width: 250, height: 18))
     var flashTimer: Timer?
     var menuOpen = false
     var lastDeleted: (clip: LocalClip, index: Int)? // untuk "Urungkan hapus" (satu clip terakhir)
@@ -1944,6 +1989,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         searchField.isBordered = false
         searchField.isBezeled = false
         searchField.drawsBackground = false
+        searchField.backgroundColor = .clear
         searchField.focusRingType = .none
         searchField.font = .menuFont(ofSize: 0)
         searchField.cell?.isScrollable = true
@@ -2006,8 +2052,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
 
     func updateIcon() {
         guard let b = item.button else { return }
-        if flashTimer == nil { b.image = barIcon("paperclip") }
-        b.appearsDisabled = !sharing || (lanMode ? !lan.running : server.state != .connected)
+        // ikon tidak pernah diredupkan: sinkron mati tetap terlihat normal (clipboard manager tetap jalan)
+        let connected = lanMode ? lan.running : server.state == .connected
+        let badge: BarBadge = !syncActive ? .none : connected ? .on : .waiting
+        if flashTimer == nil { b.image = barIcon("paperclip", badge: badge) }
+        b.appearsDisabled = false
+        b.toolTip = "PasteLAN — " + (!syncActive ? "sinkron mati, hanya clipboard manager"
+                                                 : connected ? "sinkron aktif" : "sinkron aktif, menghubungkan…")
         settings.reloadStatus()
     }
 
