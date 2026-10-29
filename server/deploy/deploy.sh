@@ -58,6 +58,25 @@ systemctl cat "$SERVICE" >/dev/null 2>&1 \
 if grep -qE "^[[:space:]]*(export[[:space:]]+)?PASTELAN_[A-Z_]*PASSWORD[[:space:]]*=[[:space:]]*[\"']?$TEMPLATE_PASSWORD" "$ENV_FILE"; then
 	die "$ENV_FILE masih memakai password contoh '$TEMPLATE_PASSWORD'. Ganti dengan: openssl rand -base64 24"
 fi
+# aturan password sama dengan config.check di server/main.go: yang diisi minimal 12 karakter dan berbeda satu sama lain.
+# Dicek SEBELUM binary diganti & restart: kalau tidak, server (versi baru maupun lama) langsung berhenti saat start
+# dan situs jadi 502 di belakang reverse proxy.
+env_value() { # nilai terakhir NAME=... di ENV_FILE, tanpa 'export' dan tanda kutip pembungkus
+	grep -E "^[[:space:]]*(export[[:space:]]+)?$1[[:space:]]*=" "$ENV_FILE" | tail -1 \
+		| sed -E "s/^[[:space:]]*(export[[:space:]]+)?$1[[:space:]]*=[[:space:]]*//; s/[[:space:]]+\$//; s/^\"(.*)\"\$/\1/; s/^'(.*)'\$/\1/" || true
+}
+admin_pw="$(env_value PASTELAN_ADMIN_PASSWORD)"
+device_pw="$(env_value PASTELAN_PASSWORD)"
+for name in PASTELAN_ADMIN_PASSWORD PASTELAN_PASSWORD; do
+	[ "$name" = PASTELAN_ADMIN_PASSWORD ] && v="$admin_pw" || v="$device_pw"
+	if [ -n "$v" ] && [ "$(printf '%s' "$v" | LC_ALL=C.UTF-8 wc -m)" -lt 12 ]; then
+		die "$name di $ENV_FILE kurang dari 12 karakter (server akan menolak start). Ganti dengan: openssl rand -base64 24"
+	fi
+done
+if [ -n "$admin_pw" ] && [ "$admin_pw" = "$device_pw" ]; then
+	die "PASTELAN_ADMIN_PASSWORD dan PASTELAN_PASSWORD di $ENV_FILE harus berbeda."
+fi
+unset admin_pw device_pw v
 [ "$(head -c 4 "$NEW_BIN" | od -An -c | tr -d ' ')" = '177ELF' ] || die "$NEW_BIN bukan binary Linux (ELF)."
 case "$(uname -m)" in
 	x86_64)  want='x86-64' ;;
@@ -144,6 +163,8 @@ health_check() {
 restart() {
 	started="$(date +%s)"
 	log "systemctl restart $SERVICE ..."
+	# setelah beberapa kali gagal start systemd menolak start baru ("Start request repeated too quickly") → reset dulu
+	systemctl reset-failed "$SERVICE" 2>/dev/null || true
 	systemctl restart "$SERVICE"
 }
 
@@ -159,6 +180,7 @@ if ! health_check; then
 	mv -f "$BIN.new" "$BIN"
 	restart || true
 	health_check && die "Versi baru tidak sehat; sudah rollback dan versi lama jalan normal lagi."
+	journalctl -u "$SERVICE" --no-pager -n 30 --since "@$started" || true
 	die "Versi baru tidak sehat DAN rollback juga tidak sehat. Perlu cek manual di server!"
 fi
 

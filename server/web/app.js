@@ -49,6 +49,13 @@
     if (/Android/.test(ua)) return 'HP Android';
     return 'Browser';
   }
+  // Jenis perangkat untuk server: "hp" (HP / tablet, termasuk iPad yang mengaku Mac) atau "browser" (komputer)
+  function clientKind() {
+    const ua = navigator.userAgent;
+    if (/iPhone|iPad|Android|Mobile/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return 'hp';
+    return 'browser';
+  }
+  const KINDS = { mac: 'Mac (menu bar)', hp: 'HP', browser: 'Browser' };
   function showLogin() {
     polling = false;
     if (ctrl) ctrl.abort();
@@ -81,7 +88,7 @@
     try {
       const j = await api('/api/login', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: $('password').value, name })
+        body: JSON.stringify({ password: $('password').value, name, client: clientKind() })
       });
       try { localStorage.setItem('pastelan-name', name); } catch (e) {}
       me = j.device.id;
@@ -109,7 +116,23 @@
   }
   function showEmpty() {
     if (!$('list').children.length) $('list').append(el('div', 'empty', 'Belum ada apa-apa. Copy sesuatu di Mac (⌘C), atau kirim dari sini.'));
+    filter();
   }
+  // ---------- pencarian (isi teks; gambar cocok dengan "gambar") ----------
+  function filter() {
+    const q = $('search').value.trim().toLowerCase();
+    let shown = 0, total = 0;
+    for (const c of $('list').children) {
+      if (c.searchText == null) continue;
+      total++;
+      const hit = !q || c.searchText.includes(q);
+      c.classList.toggle('hide', !hit);
+      if (hit) shown++;
+    }
+    $('noMatch').hidden = !q || !total || shown > 0;
+    $('noMatch').textContent = `Tidak ada clip yang cocok dengan "${$('search').value.trim()}".`;
+  }
+  $('search').addEventListener('input', filter);
   async function poll() {
     polling = true;
     while (polling) {
@@ -140,6 +163,7 @@
     if (empty) empty.remove();
     const card = el('div', 'card item');
     card.itemId = it.id;
+    card.searchText = (it.kind === 'text' ? it.text : 'gambar image ' + (it.mime || '')).toLowerCase();
     const meta = el('div', 'meta');
     const time = new Date(it.time).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
     meta.append(el('span', '', it.device === me ? 'Dari perangkat ini' : 'Dari ' + it.from), el('span', '', time));
@@ -187,6 +211,7 @@
     card.append(row);
     list.prepend(card);
     while (list.children.length > maxItems) removeCard(list.lastChild);
+    filter();
   }
 
   async function copyText(text) {
@@ -263,7 +288,7 @@
       for (const d of j.devices) {
         const row = el('div', 'dev');
         const info = el('span', '', d.name + (d.current ? ' (perangkat ini)' : ''));
-        info.append(el('small', '', 'Terakhir aktif ' + new Date(d.lastSeen).toLocaleString('id-ID')));
+        info.append(el('small', '', (KINDS[d.kind] ? KINDS[d.kind] + ' · ' : '') + 'Terakhir aktif ' + new Date(d.lastSeen).toLocaleString('id-ID')));
         row.append(info);
         if (!d.current) {
           row.append(button('Cabut', 'ghost danger', async () => {
@@ -297,7 +322,7 @@
     try {
       const j = await api('/api/pair/claim', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, name })
+        body: JSON.stringify({ code, name, client: clientKind() })
       });
       me = j.device.id;
       toast('Perangkat ini sudah masuk ✓');

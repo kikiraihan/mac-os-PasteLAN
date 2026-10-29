@@ -35,8 +35,6 @@ Merge ke `main` dengan versi yang belum punya tag akan otomatis membuat tag `v<v
   - Aplikasi Mac: satu file `Sources/PasteLAN/main.swift` (Swift + AppKit). Dua metode, dipilih di menu
     (`mode` di UserDefaults, default `server`; hanya satu yang jalan):
     - Server: klien `PasteServer` (hanya Foundation), token di Keychain.
-    - Riwayat menu (gaya CopyClip): `ClipHistory` (hanya Foundation, bisa diuji di Linux) = semua copy di Mac +
-      kiriman perangkat lain, disimpan di `~/Library/Application Support/PasteLAN/History`.
     - Wi-Fi lokal: `LANServer` + `HTTPServer` (Network.framework) + halaman HP `enum Page`. Isi `/api/` dienkripsi
       ChaCha20-Poly1305 (Swift `CryptoKit` ⇄ JS `AEAD` di `enum Page`, format `nonce + ciphertext + tag`,
       AAD `PL1|req|…`, `PL1|body|…`, `PL1|resp|…`). Ubah format di kedua sisi sekaligus.

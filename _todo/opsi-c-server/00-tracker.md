@@ -35,9 +35,6 @@ sebagai aplikasi. Opsi A tetap terdokumentasi di `../opsi-a-mac-app-plus-browser
 - [x] v1.3.0: ganti password admin dari halaman admin (hash PBKDF2 di `settings.json`, menggantikan env, sesi lain
       keluar); halaman admin baru (pola Racik: sidebar / tab bar bawah di HP, tema terang-gelap, 4 bagian);
       menu Mac gaya Clipy (riwayat langsung di menu, ⌘0–⌘9, pengaturan di submenu)
-- [x] v1.4.0: riwayat Mac gaya CopyClip (`ClipHistory`): setiap copy di Mac tercatat (walau berbagi mati / belum
-      login), kiriman HP / web ikut masuk, klik → naik ke atas + dikirim lagi kalau sudah tidak ada di server,
-      Pengaturan → Riwayat (ingat 50–500, tampil 10–50, simpan di disk ya/tidak), hapus semua dengan konfirmasi
 - [ ] Uji di Mac & HP nyata: login, install PWA, kirim dua arah, cabut perangkat
 - [ ] Uji metode Wi-Fi lokal di Mac nyata & ganti-ganti metode
 - [x] CI/CD server (pola Racik): `server-ci.yml` + `deploy-server.yml` → SSH, `deploy/deploy.sh` (backup data,

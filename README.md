@@ -27,11 +27,13 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
   **muncul otomatis** di HP dalam ±1 detik. Tekan **Salin** / **Salin gambar**
 - **PWA**: install di iPhone & Android ("Install" / "Tambahkan ke Layar Utama"), tampil seperti aplikasi biasa
 - Bisa dipakai dari **banyak perangkat** sekaligus (HP, tablet, laptop lain); tiap perangkat login sekali
-- **Riwayat clipboard di menu Mac (seperti CopyClip)**: setiap copy di Mac tercatat seketika, ditambah semua yang
-  dikirim dari HP / web. Klik item atau tekan **⌘0–⌘9** saat menu terbuka untuk menyalinnya lagi (item naik ke atas
-  dan ikut terkirim ke perangkat lain). Riwayat disimpan di Mac (50–500 clip, default 200; tetap ada setelah restart,
-  bisa dimatikan) di **Pengaturan → Riwayat**. Riwayat di server / web tetap 20 item terakhir (diatur di halaman
-  admin), hanya di memori server
+- **Clipboard manager di Mac** (gaya Clipy): riwayat langsung di menu (default 15 clip, diatur di **Pengaturan… → Umum**),
+  klik item atau tekan **⌘0–⌘9** saat menu terbuka untuk menyalinnya lagi, plus kotak **Cari clip…**;
+  **tahan ⌥ lalu klik** (atau ⌥⌘0–⌥⌘9) untuk menghapus satu clip, bisa diurungkan dari menu; **tahan ⇧ lalu klik** untuk
+  mengirim satu clip saja ke server / HP (berguna saat kirim otomatis / sinkron mati)
+- **Sinkron bisa dimatikan** dari menu: PasteLAN jadi clipboard manager saja. Saat dinyalakan lagi hanya copy baru
+  yang dikirim; clip lama bisa dicentang lalu dikirim dari **Clipboard manager…** (tab Clipboard di Pengaturan)
+- **Pencarian clip** juga di halaman web (browser / HP)
 - **Hapus per item** atau **hapus semua** dari halaman web (ikut hilang di semua perangkat)
 - **Halaman admin** (`https://server/admin`, bisa dibuka nyaman di HP): link setup untuk perangkat baru, kelola
   perangkat, password perangkat, **ganti password admin**, hapus otomatis & lama penyimpanan, batas jumlah item / memori
@@ -52,7 +54,7 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
 
 ## Dua metode
 
-Pilih di menu **📎 → Pengaturan → Metode**. Hanya satu yang aktif; metode yang tidak dipakai dimatikan penuh.
+Pilih di menu **📎 → Pengaturan… → Koneksi → Metode**. Hanya satu yang aktif; metode yang tidak dipakai dimatikan penuh.
 
 | | **Server PasteLAN** (default) | **Wi-Fi lokal** (tanpa server) |
 |---|---|---|

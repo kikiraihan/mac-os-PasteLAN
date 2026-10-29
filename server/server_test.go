@@ -123,7 +123,7 @@ func TestLoginAndAuth(t *testing.T) {
 	}
 	// token tetap berlaku setelah server restart
 	a2, err := newAuth(testPassword, testAdminPassword, a.auth.file, a.settings)
-	if err != nil || a2.check(token) == nil {
+	if err != nil || a2.check(token, "") == nil {
 		t.Fatal("token hilang setelah restart")
 	}
 }
@@ -151,9 +151,9 @@ func TestRateLimit(t *testing.T) {
 func TestGlobalLockout(t *testing.T) {
 	a := testAuth(t)
 	for i := 0; i < maxFailsGlobal; i++ {
-		a.login(fmt.Sprintf("10.0.%d.%d", i/250, i%250), "salah", "x")
+		a.login(fmt.Sprintf("10.0.%d.%d", i/250, i%250), "salah", "x", "")
 	}
-	if _, _, err := a.login("192.0.2.1", testPassword, "x"); err != errLocked {
+	if _, _, err := a.login("192.0.2.1", testPassword, "x", ""); err != errLocked {
 		t.Fatalf("login baru harus ditutup sementara: %v", err)
 	}
 }
@@ -381,15 +381,15 @@ func TestPairingExpiredAndGuessing(t *testing.T) {
 	a.mu.Lock()
 	a.pairs[hashToken(c)] = time.Now().Add(-time.Second)
 	a.mu.Unlock()
-	if _, _, err := a.claimPair("192.0.2.1", c, "x"); err != errBadPair {
+	if _, _, err := a.claimPair("192.0.2.1", c, "x", ""); err != errBadPair {
 		t.Fatalf("kode kedaluwarsa: %v", err)
 	}
 	// kode tebakan dihitung seperti password salah → IP terkunci
 	for i := 0; i < maxFailsPerIP; i++ {
-		a.claimPair("192.0.2.9", "tebakan", "x")
+		a.claimPair("192.0.2.9", "tebakan", "x", "")
 	}
 	good, _ := a.newPair(pairTTL)
-	if _, _, err := a.claimPair("192.0.2.9", good, "x"); err != errLocked {
+	if _, _, err := a.claimPair("192.0.2.9", good, "x", ""); err != errLocked {
 		t.Fatalf("setelah banyak tebakan: %v", err)
 	}
 	for i := 0; i < maxPairCodes+5; i++ {
@@ -646,12 +646,52 @@ func TestConfigCheck(t *testing.T) {
 	if err != nil || a.auth.passwordLoginAvailable() {
 		t.Fatalf("tanpa password perangkat: %v", err)
 	}
-	if _, _, err := a.auth.login("192.0.2.1", "", "x"); err != errPwDisabled {
+	if _, _, err := a.auth.login("192.0.2.1", "", "x", ""); err != errPwDisabled {
 		t.Fatalf("login tanpa password perangkat: %v", err)
 	}
 	// template di pastelan.env.example harus sama dengan yang ditolak server
 	b, err := os.ReadFile("deploy/pastelan.env.example")
 	if err != nil || !strings.Contains(string(b), "PASTELAN_ADMIN_PASSWORD="+templatePassword+"\n") {
 		t.Fatalf("pastelan.env.example harus memakai templatePassword: %v", err)
+	}
+}
+
+func TestDeviceKind(t *testing.T) {
+	cases := []struct{ claimed, ua, want string }{
+		{"mac", "Mozilla/5.0 (iPhone)", "mac"},
+		{"", "PasteLAN/11 CFNetwork/1494 Darwin/23.0.0", "mac"},
+		{"", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148", "hp"},
+		{"", "Mozilla/5.0 (Linux; Android 14) Mobile Safari/537.36", "hp"},
+		{"", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15", "browser"},
+		{"jahat", "Mozilla/5.0 (Windows NT 10.0)", "browser"},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		if got := clientKind(c.claimed, c.ua); got != c.want {
+			t.Errorf("clientKind(%q, %q) = %q, mau %q", c.claimed, c.ua, got, c.want)
+		}
+	}
+
+	ts, a := newTestServer(t)
+	body, _ := json.Marshal(map[string]string{"password": testPassword, "name": "MacBook", "client": "mac"})
+	_, b := do(t, ts, "POST", "/api/login", "", bytes.NewReader(body), nil)
+	var j struct{ Token string }
+	_ = json.Unmarshal(b, &j)
+	_, hp, _ := login(t, ts, testPassword, "HP") // klien lama tanpa "client" → ditebak dari User-Agent
+	do(t, ts, "GET", "/api/items", hp, nil, map[string]string{"User-Agent": "Mozilla/5.0 (Linux; Android 14) Mobile"})
+	kinds := map[string]string{}
+	for _, d := range a.auth.list() {
+		kinds[d.Name] = d.Kind
+	}
+	if kinds["MacBook"] != "mac" {
+		t.Fatalf("jenis perangkat: %v", kinds)
+	}
+	// Go-http-client bukan Mac / HP → "browser"; jenis pertama yang tercatat tidak berubah lagi
+	if kinds["HP"] != "browser" {
+		t.Fatalf("jenis perangkat: %v", kinds)
+	}
+	_, b = do(t, ts, "GET", "/api/devices", j.Token, nil, nil)
+	if !bytes.Contains(b, []byte(`"kind":"mac"`)) {
+		t.Fatalf("daftar perangkat tanpa jenis: %s", b)
 	}
 }

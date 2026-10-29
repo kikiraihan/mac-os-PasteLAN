@@ -142,7 +142,7 @@ type authedHandler func(w http.ResponseWriter, r *http.Request, d *device)
 
 func (a *app) authed(h authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		d := a.auth.check(tokenFrom(r))
+		d := a.auth.check(tokenFrom(r), clientKind("", r.UserAgent()))
 		if d == nil {
 			jsonError(w, http.StatusUnauthorized, "belum login")
 			return
@@ -157,12 +157,12 @@ func setCookie(w http.ResponseWriter, value string, maxAge int) {
 }
 
 func (a *app) login(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Password, Name string }
+	var req struct{ Password, Name, Client string }
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "format salah")
 		return
 	}
-	token, d, err := a.auth.login(clientIP(r), req.Password, req.Name)
+	token, d, err := a.auth.login(clientIP(r), req.Password, req.Name, clientKind(req.Client, r.UserAgent()))
 	a.loginResult(w, token, d, err)
 }
 
@@ -174,12 +174,12 @@ func (a *app) newPair(w http.ResponseWriter, r *http.Request, d *device) {
 
 // claimPair: perangkat baru (HP yang scan QR) menukar kode dengan token sendiri
 func (a *app) claimPair(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Code, Name string }
+	var req struct{ Code, Name, Client string }
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "format salah")
 		return
 	}
-	token, d, err := a.auth.claimPair(clientIP(r), req.Code, req.Name)
+	token, d, err := a.auth.claimPair(clientIP(r), req.Code, req.Name, clientKind(req.Client, r.UserAgent()))
 	a.loginResult(w, token, d, err)
 }
 
@@ -198,7 +198,7 @@ func (a *app) loginResult(w http.ResponseWriter, token string, d *device, err er
 		jsonError(w, http.StatusInternalServerError, "gagal menyimpan perangkat")
 	default:
 		setCookie(w, token, 400*24*3600) // batas maksimal browser ±400 hari; bisa dicabut kapan saja
-		writeJSON(w, http.StatusOK, map[string]any{"token": token, "device": map[string]string{"id": d.ID, "name": d.Name}})
+		writeJSON(w, http.StatusOK, map[string]any{"token": token, "device": map[string]string{"id": d.ID, "name": d.Name, "kind": d.Kind}})
 	}
 }
 
@@ -316,13 +316,14 @@ func (a *app) devices(w http.ResponseWriter, r *http.Request, d *device) {
 	type out struct {
 		ID       string `json:"id"`
 		Name     string `json:"name"`
+		Kind     string `json:"kind"`
 		Created  int64  `json:"created"`
 		LastSeen int64  `json:"lastSeen"`
 		Current  bool   `json:"current"`
 	}
 	list := []out{}
 	for _, x := range a.auth.list() {
-		list = append(list, out{x.ID, x.Name, x.Created.UnixMilli(), x.LastSeen.UnixMilli(), x.ID == d.ID})
+		list = append(list, out{x.ID, x.Name, x.Kind, x.Created.UnixMilli(), x.LastSeen.UnixMilli(), x.ID == d.ID})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"devices": list})
 }
