@@ -2314,8 +2314,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         }
     }
 
-    /// Susunan menu (gaya Clipy): kotak cari + riwayat clip di atas (⌘0–⌘9 untuk 10 teratas), lalu status & tambah HP,
-    /// lalu sinkron, clipboard manager & Pengaturan (jendela sendiri), terakhir "Keluar".
+    /// Susunan menu (gaya Clipy): kotak cari + riwayat clip di atas (⌘0–⌘9 untuk 10 teratas), lalu satu bagian berisi
+    /// status, tambah HP, buka browser, kirim clipboard, sinkron, clipboard manager & Pengaturan (jendela sendiri), terakhir "Keluar".
     func menuNeedsUpdate(_ m: NSMenu) {
         menu.removeAllItems()
         updater.menuItem.menu?.removeItem(updater.menuItem)
@@ -2324,8 +2324,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         addHistorySection()
         menu.addItem(.separator())
         if lanMode { addLANSection() } else { addServerSection() }
-        if syncActive { add("Kirim clipboard Mac sekarang", #selector(sendNow)) }
-        menu.addItem(.separator())
+        if syncActive { add("Kirim clipboard Mac sekarang", #selector(sendNow)).image = symbol("paperplane") }
         let sync = add(lanMode ? "Sinkron dengan HP (Wi-Fi lokal)" : "Sinkron dengan server & browser", #selector(toggleSharing), on: sharing)
         sync.image = symbol("arrow.triangle.2.circlepath")
         sync.toolTip = "Matikan untuk memakai PasteLAN sebagai clipboard manager saja. Saat dinyalakan lagi, hanya copy baru yang dikirim."
@@ -2460,10 +2459,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         st.image = statusDot(sharing && loggedIn && server.state == .connected)
         menu.addItem(st)
         if loggedIn, serverURL != nil {
-            add("Tambah HP (scan QR, tanpa password)…", #selector(pairPhone))
-            add("Buka PasteLAN di browser", #selector(openWeb))
+            add("Tambah HP (scan QR, tanpa password)…", #selector(pairPhone)).image = symbol("qrcode.viewfinder")
+            add("Buka PasteLAN di browser", #selector(openWeb)).image = symbol("safari")
         } else {
-            add("Atur server & login…", #selector(setupServer))
+            add("Atur server & login…", #selector(setupServer)).image = symbol("server.rack")
         }
     }
 
@@ -2490,6 +2489,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         menu.addItem(st)
 
         let pair = NSMenuItem(title: "Tambah HP (scan QR)", action: nil, keyEquivalent: "")
+        pair.image = symbol("qrcode.viewfinder")
         let pm = NSMenu()
         pm.autoenablesItems = false
         let qr = NSMenuItem()
