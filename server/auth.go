@@ -61,7 +61,7 @@ type auth struct {
 	mu        sync.Mutex
 	pwHash    [32]byte // SHA-256 PASTELAN_PASSWORD (hanya di memori); dipakai kalau admin belum mengganti password
 	hasEnvPw  bool
-	adminHash [32]byte // SHA-256 PASTELAN_ADMIN_PASSWORD (hanya di memori)
+	adminHash [32]byte // SHA-256 PASTELAN_ADMIN_PASSWORD (hanya di memori); kalah oleh hash dari halaman admin
 	hasAdmin  bool
 	admins    map[string]time.Time // hash token sesi admin → kedaluwarsa (hanya di memori)
 	settings  *settingsStore
@@ -186,20 +186,39 @@ func (a *auth) login(ip, password, name string) (string, *device, error) {
 	return a.newDevice(name, now)
 }
 
-// adminLogin memeriksa PASTELAN_ADMIN_PASSWORD lalu membuat sesi admin. Salah password dihitung bersama login perangkat.
+// adminEnabled: halaman admin aktif kalau ada PASTELAN_ADMIN_PASSWORD atau password admin dari halaman admin
+func (a *auth) adminEnabled() bool {
+	return a.hasAdmin || a.settings.get().AdminPassword != ""
+}
+
+// adminPasswordOK: hash dari halaman admin (PBKDF2) didahulukan, kalau belum ada pakai PASTELAN_ADMIN_PASSWORD.
+// Dipanggil tanpa a.mu (PBKDF2 lambat).
+func (a *auth) adminPasswordOK(password string) bool {
+	if h := a.settings.get().AdminPassword; h != "" {
+		hashSlots <- struct{}{}
+		defer func() { <-hashSlots }()
+		return checkPasswordHash(password, h)
+	}
+	return a.hasAdmin && sha256Equal(password, a.adminHash)
+}
+
+// adminLogin memeriksa password admin lalu membuat sesi admin. Salah password dihitung bersama login perangkat.
 func (a *auth) adminLogin(ip, password string) (string, error) {
-	if !a.hasAdmin {
+	if !a.adminEnabled() {
 		return "", errNoAdmin
 	}
+	key := limitKey(ip)
+	if a.isLocked(key) {
+		return "", errLocked
+	}
+	ok := a.adminPasswordOK(password) // di luar a.mu
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := time.Now()
-	key := limitKey(ip)
 	if a.locked(key, now) {
 		return "", errLocked
 	}
-	h := sha256.Sum256([]byte(password))
-	if subtle.ConstantTimeCompare(h[:], a.adminHash[:]) != 1 {
+	if !ok {
 		a.recordFail(key, now)
 		return "", errBadPassword
 	}
@@ -221,6 +240,34 @@ func (a *auth) adminLogin(ip, password string) (string, error) {
 	token := randomString(32)
 	a.admins[hashToken(token)] = now.Add(adminTTL)
 	return token, nil
+}
+
+// checkAdminPassword: konfirmasi password admin sekarang (mis. sebelum menggantinya). Salah → dihitung seperti login.
+func (a *auth) checkAdminPassword(ip, password string) error {
+	key := limitKey(ip)
+	if a.isLocked(key) {
+		return errLocked
+	}
+	ok := a.adminPasswordOK(password)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !ok {
+		a.recordFail(key, time.Now())
+		return errBadPassword
+	}
+	return nil
+}
+
+// keepOnlyAdmin: setelah password admin diganti, semua sesi admin lain (perangkat / browser lain) dikeluarkan
+func (a *auth) keepOnlyAdmin(token string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	keep := hashToken(token)
+	for t := range a.admins {
+		if t != keep {
+			delete(a.admins, t)
+		}
+	}
 }
 
 func (a *auth) checkAdmin(token string) bool {

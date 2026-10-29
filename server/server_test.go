@@ -532,6 +532,55 @@ func TestAdminSettingsAndPassword(t *testing.T) {
 	}
 }
 
+func TestAdminChangeAdminPassword(t *testing.T) {
+	ts, a := newTestServer(t)
+	_, ck := adminLogin(t, ts, testAdminPassword)
+	_, ck2 := adminLogin(t, ts, testAdminPassword) // sesi admin lain (browser lain)
+	change := func(cur, pw string) int {
+		body, _ := json.Marshal(map[string]string{"current": cur, "password": pw})
+		res, _ := do(t, ts, "POST", "/api/admin/admin-password", "", bytes.NewReader(body), ck)
+		return res.StatusCode
+	}
+	const baru = "admin-baru-yang-panjang-789"
+	if change("salah-salah-salah", baru) != 403 {
+		t.Fatal("password sekarang salah harus ditolak")
+	}
+	if change(testAdminPassword, "pendek") != 400 || change(testAdminPassword, templatePassword) != 400 ||
+		change(testAdminPassword, testPassword) != 400 || change(testAdminPassword, testAdminPassword) != 400 {
+		t.Fatal("password baru lemah / contoh / sama dengan password perangkat / tidak berubah harus ditolak")
+	}
+	if code := change(testAdminPassword, baru); code != 200 {
+		t.Fatalf("ganti password admin: %d", code)
+	}
+	// sesi ini tetap, sesi lain dikeluarkan
+	if res, _ := do(t, ts, "GET", "/api/admin/status", "", nil, ck); res.StatusCode != 200 {
+		t.Fatalf("sesi yang mengganti password: %d", res.StatusCode)
+	}
+	if res, _ := do(t, ts, "GET", "/api/admin/status", "", nil, ck2); res.StatusCode != 401 {
+		t.Fatalf("sesi admin lain harus keluar: %d", res.StatusCode)
+	}
+	if code, _ := adminLogin(t, ts, testAdminPassword); code != 401 {
+		t.Fatalf("password admin lama (env) masih berlaku: %d", code)
+	}
+	if code, _ := adminLogin(t, ts, baru); code != 200 {
+		t.Fatalf("login dengan password admin baru: %d", code)
+	}
+	b, _ := os.ReadFile(a.settings.file)
+	if strings.Contains(string(b), baru) || !strings.Contains(string(b), `"adminPassword": "pbkdf2-sha256$`) {
+		t.Fatalf("settings.json harus berisi hash password admin: %s", b)
+	}
+	// tetap berlaku setelah restart, walau PASTELAN_ADMIN_PASSWORD kosong
+	a2, err := newApp(testPassword, "", filepath.Dir(a.settings.file))
+	if err != nil || !a2.auth.adminEnabled() || !a2.auth.adminPasswordOK(baru) || a2.auth.adminPasswordOK(testAdminPassword) {
+		t.Fatalf("password admin setelah restart: %v", err)
+	}
+	// password perangkat tidak boleh sama dengan password admin yang baru
+	body, _ := json.Marshal(map[string]string{"password": baru})
+	if res, _ := do(t, ts, "POST", "/api/admin/password", "", bytes.NewReader(body), ck); res.StatusCode != 400 {
+		t.Fatalf("password perangkat = password admin baru: %d", res.StatusCode)
+	}
+}
+
 func TestDeleteItem(t *testing.T) {
 	ts, _ := newTestServer(t)
 	_, token, _ := login(t, ts, testPassword, "HP")

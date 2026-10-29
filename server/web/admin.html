@@ -3,80 +3,243 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3f4f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1219" media="(prefers-color-scheme: dark)">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex">
 <title>PasteLAN Admin</title>
 <link rel="icon" href="/icon-192.png">
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/admin.css">
 <script src="/admin.js" defer></script>
 </head>
 <body>
-<header><span id="dot" class="dot"></span><h1>PasteLAN Admin</h1><span id="status"></span></header>
-<main>
-  <form id="login" class="card" hidden>
-    <h2 class="title">Masuk admin</h2>
-    <p class="hint">Password admin = PASTELAN_ADMIN_PASSWORD di server (/etc/pastelan.env).</p>
-    <label>Password admin<input id="password" type="password" autocomplete="current-password" required></label>
-    <button id="loginBtn" type="submit">Masuk</button>
-    <div id="loginErr" class="err"></div>
+<!-- Ikon (SVG sprite, tanpa script / style inline → aman untuk CSP) -->
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-clip" viewBox="0 0 24 24"><path d="M21 11.5 12.6 19.9a5.5 5.5 0 0 1-7.8-7.8l8.5-8.5a3.7 3.7 0 0 1 5.2 5.2l-8.5 8.5a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></symbol>
+  <symbol id="i-devices" viewBox="0 0 24 24"><rect x="2" y="4" width="14" height="10" rx="1.5"/><path d="M1 18h12"/><rect x="17" y="8" width="6" height="12" rx="1.5"/></symbol>
+  <symbol id="i-board" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1M9 10h6M9 14h6M9 18h3"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6l-8-3Z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+  <symbol id="i-out" viewBox="0 0 24 24"><path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l5-5-5-5M15 12H3"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></symbol>
+  <symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" class="fill"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.6-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.6 4.5L20 16M20 20v-4h-4"/></symbol>
+</svg>
+
+<!-- Masuk admin -->
+<div id="login" class="login" hidden>
+  <form id="loginForm" class="login-card">
+    <span class="mark lg"><svg><use href="#i-clip"/></svg></span>
+    <h1>PasteLAN Admin</h1>
+    <p class="muted">Masuk untuk mengelola perangkat dan clipboard di server ini.</p>
+    <label class="field"><span>Password admin</span>
+      <input id="password" type="password" autocomplete="current-password" required></label>
+    <button id="loginBtn" class="btn primary block" type="submit">Masuk</button>
+    <p id="loginErr" class="err" role="alert"></p>
+    <p class="hint">Lupa password? Lihat <code>PASTELAN_ADMIN_PASSWORD</code> di <code>/etc/pastelan.env</code>
+      (kalau password belum pernah diganti dari halaman ini).</p>
   </form>
+</div>
 
-  <div id="app" hidden>
-    <h2>Tambah perangkat</h2>
-    <div class="card">
-      <p class="hint">Link setup sekali pakai: perangkat baru masuk tanpa password.
-        Mac: menu PasteLAN → "Atur server & login…" → tempel link. HP: buka link di browser.</p>
-      <div class="row"><button id="newLink" class="grow">Buat link setup</button></div>
-      <div id="linkBox" hidden>
-        <input id="link" readonly>
-        <div class="row"><button id="copyLink" class="grow">Salin link</button></div>
-        <div id="linkExp" class="hint"></div>
-      </div>
+<!-- Panel admin -->
+<div id="app" class="shell" hidden>
+  <aside class="sidebar">
+    <a class="brand" href="#ringkasan">
+      <span class="mark"><svg><use href="#i-clip"/></svg></span>
+      <span class="brand-text"><strong>PasteLAN</strong><small>Admin</small></span>
+    </a>
+    <nav class="nav" aria-label="Menu admin">
+      <a href="#ringkasan" data-page="ringkasan"><svg><use href="#i-home"/></svg><span>Ringkasan</span></a>
+      <a href="#perangkat" data-page="perangkat"><svg><use href="#i-devices"/></svg><span>Perangkat</span></a>
+      <a href="#clipboard" data-page="clipboard"><svg><use href="#i-board"/></svg><span>Clipboard</span></a>
+      <a href="#keamanan" data-page="keamanan"><svg><use href="#i-shield"/></svg><span>Keamanan</span></a>
+    </nav>
+    <div class="side-foot">
+      <a class="side-link" href="/"><svg><use href="#i-open"/></svg><span>Buka PasteLAN</span></a>
+      <button class="side-link" id="logout" type="button"><svg><use href="#i-out"/></svg><span>Keluar admin</span></button>
+      <p id="version" class="ver"></p>
     </div>
+  </aside>
 
-    <h2>Riwayat clipboard</h2>
-    <form id="clipForm" class="card">
-      <div id="usage" class="hint"></div>
-      <label class="check"><input id="autoClear" type="checkbox"> Hapus otomatis isi clipboard yang sudah lama</label>
-      <label>Simpan selama
-        <span class="row inline"><input id="retention" type="number" min="1" required>
-          <select id="retentionUnit"><option value="1">menit</option><option value="60">jam</option><option value="1440">hari</option></select></span>
-      </label>
-      <label>Jumlah item maksimal (1–200)<input id="maxItems" type="number" min="1" max="200" required></label>
-      <label>Total memori maksimal, MB (1–1024)<input id="maxTotalMB" type="number" min="1" max="1024" required></label>
-      <label>Link setup berlaku, menit (1–60)<input id="setupLinkMinutes" type="number" min="1" max="60" required></label>
-      <p class="hint">Isi clipboard hanya di memori server: hilang saat server restart walau hapus otomatis dimatikan.
-        Item terlama dibuang kalau jumlah / memori melebihi batas.</p>
-      <div class="row">
-        <button type="submit" class="grow">Simpan</button>
-        <button id="clearItems" type="button" class="ghost danger">Hapus semua riwayat</button>
-      </div>
-    </form>
+  <div class="main">
+    <header class="topbar">
+      <span class="mark sm only-mobile"><svg><use href="#i-clip"/></svg></span>
+      <h1 id="pageTitle">Ringkasan</h1>
+      <button id="reload" class="icon-btn" type="button" title="Muat ulang" aria-label="Muat ulang"><svg><use href="#i-refresh"/></svg></button>
+      <button id="theme" class="icon-btn" type="button" title="Tema" aria-label="Tema"><svg><use id="themeIcon" href="#i-auto"/></svg></button>
+      <button id="logoutTop" class="icon-btn only-mobile" type="button" title="Keluar admin" aria-label="Keluar admin"><svg><use href="#i-out"/></svg></button>
+    </header>
 
-    <h2>Login dengan password</h2>
-    <form id="pwForm" class="card">
-      <label class="check"><input id="passwordLogin" type="checkbox"> Perangkat boleh masuk dengan password bersama</label>
-      <div id="pwInfo" class="hint"></div>
-      <label>Password perangkat baru (min. 12 karakter, beda dari password admin)
-        <input id="newPassword" type="password" autocomplete="new-password" minlength="12"></label>
-      <div class="row"><button type="submit" class="grow">Simpan</button></div>
-    </form>
+    <main class="content">
+      <!-- Ringkasan -->
+      <section id="page-ringkasan" class="page" data-title="Ringkasan">
+        <div class="stats">
+          <a class="stat" href="#perangkat">
+            <span class="k">Perangkat masuk</span>
+            <span class="v" id="stDevices">–</span>
+            <span class="s" id="stDevicesSub"></span>
+          </a>
+          <a class="stat" href="#clipboard">
+            <span class="k">Isi clipboard</span>
+            <span class="v" id="stItems">–</span>
+            <span class="meter"><span id="stMeter"></span></span>
+            <span class="s" id="stItemsSub"></span>
+          </a>
+          <a class="stat" href="#keamanan">
+            <span class="k">Masuk dengan password</span>
+            <span class="v" id="stPw">–</span>
+            <span class="s" id="stPwSub"></span>
+          </a>
+        </div>
 
-    <h2>Perangkat</h2>
-    <div class="card">
-      <div id="devices"></div>
-      <div class="row"><button id="revokeAll" class="ghost danger">Cabut semua perangkat</button></div>
-    </div>
+        <div class="card">
+          <div class="card-h">
+            <div><h2>Tambah perangkat</h2>
+              <p class="muted">Buat link sekali pakai. Perangkat baru langsung masuk tanpa password.</p></div>
+          </div>
+          <button class="btn primary" type="button" data-action="newLink"><svg><use href="#i-plus"/></svg>Buat link setup</button>
+          <div class="ticket" data-ticket hidden></div>
+        </div>
 
-    <div class="row">
-      <a class="btn ghost grow" href="/">Buka PasteLAN</a>
-      <button id="logout" class="ghost danger">Keluar admin</button>
-    </div>
-    <p id="version" class="hint"></p>
+        <div class="card">
+          <div class="card-h">
+            <div><h2>Terakhir aktif</h2></div>
+            <a class="btn ghost sm" href="#perangkat">Lihat semua</a>
+          </div>
+          <ul id="recentDevices" class="devs"></ul>
+        </div>
+      </section>
+
+      <!-- Perangkat -->
+      <section id="page-perangkat" class="page" data-title="Perangkat" hidden>
+        <div class="card">
+          <div class="card-h">
+            <div><h2>Tambah perangkat</h2>
+              <p class="muted">Mac: menu PasteLAN → Pengaturan → "Atur server &amp; login…", lalu tempel link.
+                HP: buka link di browser.</p></div>
+          </div>
+          <button class="btn primary" type="button" data-action="newLink"><svg><use href="#i-plus"/></svg>Buat link setup</button>
+          <div class="ticket" data-ticket hidden></div>
+        </div>
+
+        <div class="card">
+          <div class="card-h">
+            <div><h2>Perangkat yang masuk</h2><p class="muted" id="devCount"></p></div>
+          </div>
+          <ul id="devices" class="devs"></ul>
+        </div>
+
+        <div class="card danger-zone">
+          <div class="card-h"><div><h2>Cabut semua perangkat</h2>
+            <p class="muted">Semua Mac dan HP keluar dan harus masuk lagi lewat link setup atau password.</p></div></div>
+          <button id="revokeAll" class="btn danger" type="button">Cabut semua perangkat</button>
+        </div>
+      </section>
+
+      <!-- Clipboard -->
+      <section id="page-clipboard" class="page" data-title="Clipboard" hidden>
+        <form id="clipForm" class="card">
+          <div class="card-h"><div><h2>Riwayat clipboard</h2>
+            <p class="muted">Isi clipboard hanya di memori server dan hilang saat server restart.
+              Kalau batas terlampaui, item terlama dibuang.</p></div></div>
+
+          <div class="usage">
+            <div class="usage-row"><span id="usageText"></span><span id="usagePct" class="muted"></span></div>
+            <span class="meter"><span id="usageMeter"></span></span>
+          </div>
+
+          <label class="switch-row">
+            <span><b>Hapus otomatis</b><small>Buang isi clipboard yang sudah lama.</small></span>
+            <input id="autoClear" type="checkbox" class="switch">
+          </label>
+          <label class="field"><span>Simpan selama</span>
+            <span class="combo"><input id="retention" type="number" min="1" required inputmode="numeric">
+              <select id="retentionUnit"><option value="1">menit</option><option value="60">jam</option><option value="1440">hari</option></select></span>
+          </label>
+          <div class="grid2">
+            <label class="field"><span>Jumlah item maksimal</span>
+              <input id="maxItems" type="number" min="1" max="200" required inputmode="numeric"><small>1–200</small></label>
+            <label class="field"><span>Memori maksimal (MB)</span>
+              <input id="maxTotalMB" type="number" min="1" max="1024" required inputmode="numeric"><small>1–1024</small></label>
+          </div>
+          <div class="actions"><button class="btn primary" type="submit">Simpan pengaturan</button></div>
+        </form>
+
+        <div class="card danger-zone">
+          <div class="card-h"><div><h2>Hapus semua riwayat</h2>
+            <p class="muted">Riwayat clipboard dikosongkan di semua perangkat.</p></div></div>
+          <button id="clearItems" class="btn danger" type="button">Hapus semua riwayat</button>
+        </div>
+      </section>
+
+      <!-- Keamanan -->
+      <section id="page-keamanan" class="page" data-title="Keamanan" hidden>
+        <form id="adminPwForm" class="card">
+          <div class="card-h"><div><h2>Password admin</h2><p class="muted" id="adminPwInfo"></p></div></div>
+          <label class="field"><span>Password sekarang</span>
+            <input id="curAdminPw" type="password" autocomplete="current-password" required></label>
+          <div class="grid2">
+            <label class="field"><span>Password baru</span>
+              <input id="newAdminPw" type="password" autocomplete="new-password" minlength="12" required>
+              <small>Minimal 12 karakter.</small></label>
+            <label class="field"><span>Ulangi password baru</span>
+              <input id="newAdminPw2" type="password" autocomplete="new-password" minlength="12" required></label>
+          </div>
+          <label class="check"><input id="showAdminPw" type="checkbox"> Tampilkan password</label>
+          <div class="actions"><button class="btn primary" type="submit">Ganti password admin</button></div>
+          <p class="hint">Setelah diganti, browser lain yang sedang masuk admin akan dikeluarkan.
+            Lupa password baru? Hapus baris <code>"adminPassword"</code> di <code>settings.json</code> (folder data server)
+            lalu restart server: password kembali ke <code>PASTELAN_ADMIN_PASSWORD</code>.</p>
+        </form>
+
+        <form id="pwForm" class="card">
+          <div class="card-h"><div><h2>Masuk dengan password perangkat</h2>
+            <p class="muted">Cara masuk cadangan selain link setup. Password ini dipakai bersama oleh semua perangkat.</p></div></div>
+          <label class="switch-row">
+            <span><b>Izinkan masuk dengan password</b><small id="pwInfo"></small></span>
+            <input id="passwordLogin" type="checkbox" class="switch">
+          </label>
+          <label class="field"><span>Password perangkat baru</span>
+            <input id="newPassword" type="password" autocomplete="new-password" minlength="12">
+            <small>Kosongkan kalau tidak diganti. Minimal 12 karakter, beda dari password admin.</small></label>
+          <div class="actions"><button class="btn primary" type="submit">Simpan</button></div>
+        </form>
+
+        <form id="linkForm" class="card">
+          <div class="card-h"><div><h2>Link setup</h2>
+            <p class="muted">Link setup hanya bisa dipakai sekali dan kedaluwarsa setelah waktu ini.</p></div></div>
+          <label class="field"><span>Berlaku selama (menit)</span>
+            <input id="setupLinkMinutes" type="number" min="1" max="60" required inputmode="numeric"><small>1–60</small></label>
+          <div class="actions"><button class="btn primary" type="submit">Simpan</button></div>
+        </form>
+      </section>
+    </main>
   </div>
-</main>
-<div id="toast"></div>
+
+  <!-- Tab bar bawah (layar kecil) -->
+  <nav class="tabbar" aria-label="Menu admin">
+    <a href="#ringkasan" data-page="ringkasan"><svg><use href="#i-home"/></svg><span>Ringkasan</span></a>
+    <a href="#perangkat" data-page="perangkat"><svg><use href="#i-devices"/></svg><span>Perangkat</span></a>
+    <a href="#clipboard" data-page="clipboard"><svg><use href="#i-board"/></svg><span>Clipboard</span></a>
+    <a href="#keamanan" data-page="keamanan"><svg><use href="#i-shield"/></svg><span>Keamanan</span></a>
+  </nav>
+</div>
+
+<!-- Dialog konfirmasi -->
+<dialog id="confirm" class="dialog">
+  <h3 id="confirmTitle"></h3>
+  <p id="confirmText" class="muted"></p>
+  <div class="actions">
+    <button id="confirmCancel" type="button" class="btn ghost">Batal</button>
+    <button id="confirmOk" type="button" class="btn danger solid">Ya</button>
+  </div>
+</dialog>
+
+<div id="toast" role="status"></div>
 </body>
 </html>

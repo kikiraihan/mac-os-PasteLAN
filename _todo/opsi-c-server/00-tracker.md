@@ -32,6 +32,9 @@ sebagai aplikasi. Opsi A tetap terdokumentasi di `../opsi-a-mac-app-plus-browser
       perangkat (cabut / cabut semua), password perangkat opsional (aktif / mati, hash PBKDF2), hapus otomatis &
       lama simpan, batas item / memori, masa berlaku link; `deploy/pastelan.env.example` + `server/AGENTS.md`
 - [x] v1.2.0: web: hapus per item & "Hapus semua" (tersinkron ke semua perangkat lewat `ids` / `rev`)
+- [x] v1.3.0: ganti password admin dari halaman admin (hash PBKDF2 di `settings.json`, menggantikan env, sesi lain
+      keluar); halaman admin baru (pola Racik: sidebar / tab bar bawah di HP, tema terang-gelap, 4 bagian);
+      menu Mac gaya Clipy (riwayat langsung di menu, ⌘0–⌘9, pengaturan di submenu)
 - [ ] Uji di Mac & HP nyata: login, install PWA, kirim dua arah, cabut perangkat
 - [ ] Uji metode Wi-Fi lokal di Mac nyata & ganti-ganti metode
 - [x] CI/CD server (pola Racik): `server-ci.yml` + `deploy-server.yml` → SSH, `deploy/deploy.sh` (backup data,

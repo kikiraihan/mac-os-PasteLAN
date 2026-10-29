@@ -40,8 +40,10 @@ Merge ke `main` dengan versi yang belum punya tag akan otomatis membuat tag `v<v
       AAD `PL1|req|…`, `PL1|body|…`, `PL1|resp|…`). Ubah format di kedua sisi sekaligus.
   - Server: `server/` (Go, standard library saja). Halaman web / PWA di `server/web/` (HTML/CSS/JS biasa,
     tanpa framework / CDN, di-`embed` ke binary). Cek: `cd server && gofmt -l . && go vet ./... && go test -race ./...`.
-    Halaman admin `/admin` (`web/admin.html` + `admin.js`, password `PASTELAN_ADMIN_PASSWORD`): link setup, perangkat,
-    password perangkat (opsional, hash PBKDF2 di `settings.json`), batas riwayat. Agen yang memasang server: baca
+    Halaman admin `/admin` (`web/admin.html` + `admin.css` + `admin.js`, password `PASTELAN_ADMIN_PASSWORD` atau hash
+    PBKDF2 `adminPassword` di `settings.json` bila diganti dari halaman admin): link setup, perangkat, password perangkat
+    (opsional, hash PBKDF2 di `settings.json`), ganti password admin, batas riwayat. Tanpa database: `settings.json`
+    + `devices.json` cukup (dibaca sekali saat start, ditulis atomik). Agen yang memasang server: baca
     `server/AGENTS.md` (jangan salin password contoh dari `deploy/pastelan.env.example`).
     CI/CD server: `server-ci.yml` (cek + build) dan `deploy-server.yml` (push `main` yang mengubah `server/` → SSH →
     `server/deploy/deploy.sh`: backup, health check, rollback otomatis). Panduan: `server/CICD.md`.

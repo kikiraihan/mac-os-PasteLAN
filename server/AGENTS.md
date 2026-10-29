@@ -17,6 +17,9 @@ publik, jadi siapa pun tahu nilainya.
   ```
   Server menolak berjalan kalau password masih template, kurang dari 12 karakter, atau password admin sama dengan
   `PASTELAN_PASSWORD`.
+- Pemilik bisa mengganti password admin dari halaman admin → Keamanan. Setelah itu hash-nya ada di `settings.json`
+  (`"adminPassword"`) dan **menggantikan** `PASTELAN_ADMIN_PASSWORD`. Jangan menghapus field itu kecuali pemilik
+  memintanya (mis. lupa password).
 - Kalau pemilik memberi password sendiri, pakai itu hanya di `/etc/pastelan.env` di server. Jangan menulisnya ke
   repo, commit, file lain, atau log, dan jangan menampilkannya lagi selain sekali ke pemilik bila diminta.
 - Beri tahu pemilik **di mana** password admin tersimpan (`sudo grep ADMIN /etc/pastelan.env`) supaya ia bisa

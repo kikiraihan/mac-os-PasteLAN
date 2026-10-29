@@ -27,10 +27,11 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
   **muncul otomatis** di HP dalam ±1 detik. Tekan **Salin** / **Salin gambar**
 - **PWA**: install di iPhone & Android ("Install" / "Tambahkan ke Layar Utama"), tampil seperti aplikasi biasa
 - Bisa dipakai dari **banyak perangkat** sekaligus (HP, tablet, laptop lain); tiap perangkat login sekali
-- **Riwayat 20 item terakhir** (bisa diatur di halaman admin); klik item di menu Mac untuk menyalinnya lagi
+- **Riwayat 20 item terakhir** (bisa diatur di halaman admin) langsung di menu Mac (gaya Clipy): klik item atau
+  tekan **⌘0–⌘9** saat menu terbuka untuk menyalinnya lagi; pengaturan ada di submenu **Pengaturan**
 - **Hapus per item** atau **hapus semua** dari halaman web (ikut hilang di semua perangkat)
-- **Halaman admin** (`https://server/admin`): link setup untuk perangkat baru, kelola perangkat, password,
-  hapus otomatis & lama penyimpanan, batas jumlah item / memori
+- **Halaman admin** (`https://server/admin`, bisa dibuka nyaman di HP): link setup untuk perangkat baru, kelola
+  perangkat, password perangkat, **ganti password admin**, hapus otomatis & lama penyimpanan, batas jumlah item / memori
 - Mode **otomatis** atau **manual** ("Kirim clipboard Mac sekarang") di Mac
 - Opsi menyimpan gambar dari HP ke folder **Unduhan**
 - Buka saat login, update dari menu (bertanda tangan), uninstall dari menu
@@ -38,8 +39,8 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
 ## Cara pakai
 
 1. **Pasang server** di VPS Anda (sekali saja), lihat [Server](#server).
-2. **Mac**: buka `https://server-anda/admin` (password admin) → **Buat link setup**. Klik ikon **⇄** di menu bar →
-   **Atur server & login…** → tempel link itu (tanpa password). Bisa juga alamat server + password perangkat
+2. **Mac**: buka `https://server-anda/admin` (password admin) → **Buat link setup**. Klik ikon **📎** (penjepit kertas) di
+   menu bar → **Atur server & login…** → tempel link itu (tanpa password). Bisa juga alamat server + password perangkat
    kalau login dengan password diaktifkan di admin.
 3. **HP**: menu Mac → **Tambah HP (scan QR)…**, scan dengan kamera HP → HP langsung masuk **tanpa mengetik
    password**. Lalu **Install** / **Tambahkan ke Layar Utama**. (Atau buka link setup dari admin di HP.)
@@ -48,7 +49,7 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
 
 ## Dua metode
 
-Pilih di menu **⇄ → Metode**. Hanya satu yang aktif; metode yang tidak dipakai dimatikan penuh.
+Pilih di menu **📎 → Pengaturan → Metode**. Hanya satu yang aktif; metode yang tidak dipakai dimatikan penuh.
 
 | | **Server PasteLAN** (default) | **Wi-Fi lokal** (tanpa server) |
 |---|---|---|
@@ -79,7 +80,8 @@ Mode Wi-Fi lokal:
 - **QR sekali pakai**: "Tambah HP (scan QR)…" di Mac membuat kode acak 256-bit yang berlaku **5 menit** dan hanya
   untuk **satu** perangkat (server hanya menyimpan hash-nya; kode ada di `#pair=` sehingga tidak masuk log / Referer,
   dan langsung dihapus dari alamat setelah dipakai). Kode hanya dibuat saat diminta, bukan setiap menu dibuka.
-- **Admin**: halaman `/admin` dengan password sendiri (`PASTELAN_ADMIN_PASSWORD`, hanya di server). Sesi admin di
+- **Admin**: halaman `/admin` dengan password sendiri (`PASTELAN_ADMIN_PASSWORD`, hanya di server; bisa diganti dari
+  halaman admin dengan mengetik password lama → disimpan sebagai hash PBKDF2, sesi admin lain dikeluarkan). Sesi admin di
   cookie terpisah (`HttpOnly` + `Secure` + `SameSite=Strict`, 12 jam, hanya di memori). **Link setup** dari admin
   sama seperti QR: kode acak 256-bit, sekali pakai, berlaku 10 menit (bisa diatur 1–60).
 - **Password perangkat (opsional) + token per perangkat**: login dengan password bisa dimatikan di admin. Password
