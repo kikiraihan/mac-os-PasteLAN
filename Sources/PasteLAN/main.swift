@@ -219,6 +219,134 @@ final class Clipboard {
     }
 }
 
+// MARK: - Riwayat clipboard Mac (clipboard manager; hanya di memori, tidak pernah ditulis ke disk)
+
+/// Satu clip di riwayat Mac. Kelas (bukan struct) supaya status kirimnya bisa diperbarui setelah server menjawab.
+final class LocalClip {
+    let id: Int
+    let kind: String   // "text" / "image"
+    let text: String?
+    var data: Data?    // isi gambar; nil = gambar di server yang belum diambil
+    let mime: String?
+    let size: Int
+    var from: String   // "" = Mac ini, selain itu nama perangkat pengirim
+    var time: Date
+    var serverID: Int? // id item di server PasteLAN (kalau ada di sana)
+    var synced: Bool   // sudah dikirim ke / diterima dari server atau HP
+
+    init(id: Int, kind: String, text: String?, data: Data?, mime: String?, size: Int, from: String, time: Date,
+         serverID: Int?, synced: Bool) {
+        self.id = id
+        self.kind = kind
+        self.text = text
+        self.data = data
+        self.mime = mime
+        self.size = size
+        self.from = from
+        self.time = time
+        self.serverID = serverID
+        self.synced = synced
+    }
+
+    /// Cuplikan satu baris untuk menu & tabel
+    var title: String { clipTitle(kind: kind, text: text, mime: mime, size: size) }
+    var source: String { from.isEmpty ? "Mac ini" : from }
+    var status: String { !from.isEmpty ? "Diterima" : synced ? "Terkirim" : "Hanya di Mac" }
+    var pending: Bool { from.isEmpty && !synced }
+
+    /// Cocok dengan kata pencarian (isi teks; gambar cocok dengan "gambar" / jenis filenya)
+    func matches(_ query: String) -> Bool {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.isEmpty { return true }
+        let hay = kind == "image" ? "gambar image \(fileExt(mime))" : (text ?? "")
+        return hay.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+
+    func same(kind k: String, text t: String?, data d: Data?, serverID sid: Int?) -> Bool {
+        guard k == kind else { return false }
+        if kind == "text" { return t == text }
+        if let sid, sid == serverID { return true }
+        if let d, let data { return d == data }
+        return false
+    }
+}
+
+/// Riwayat clipboard Mac: semua copy di Mac (juga saat sinkron mati) + kiriman dari perangkat lain. Terbaru di depan.
+final class History {
+    private(set) var items: [LocalClip] = []
+    private var nextID = 1
+    let maxImageBytes = 200 * 1024 * 1024
+    var limit = 15 {
+        didSet {
+            trim()
+            onChange?()
+        }
+    }
+    var onChange: (() -> Void)?
+
+    /// Isi yang sama dengan clip yang sudah ada → clip itu dipakai lagi (naik ke atas kalau `bump`)
+    @discardableResult
+    func add(kind: String, text: String?, data: Data?, mime: String?, size: Int, from: String, synced: Bool,
+             serverID: Int? = nil, time: Date = Date(), bump: Bool = true) -> LocalClip {
+        if let i = items.firstIndex(where: { $0.same(kind: kind, text: text, data: data, serverID: serverID) }) {
+            let c = items[i]
+            if c.data == nil, let data { c.data = data }
+            if c.serverID == nil { c.serverID = serverID }
+            c.synced = c.synced || synced
+            if bump {
+                c.time = time
+                c.from = from
+                items.remove(at: i)
+                items.insert(c, at: 0)
+            }
+            onChange?()
+            return c
+        }
+        let c = LocalClip(id: nextID, kind: kind, text: text, data: data, mime: mime, size: size, from: from, time: time,
+                          serverID: serverID, synced: synced)
+        nextID += 1
+        items.insert(c, at: 0)
+        trim()
+        onChange?()
+        return c
+    }
+
+    @discardableResult
+    func add(_ p: PasteContent, from: String, synced: Bool) -> LocalClip {
+        add(kind: p.kind, text: p.text, data: p.data, mime: p.mime, size: p.data?.count ?? p.text?.utf8.count ?? 0,
+            from: from, synced: synced)
+    }
+
+    func clip(_ id: Int) -> LocalClip? { items.first { $0.id == id } }
+
+    /// Clip yang disalin lagi naik ke paling atas (seperti Clipy)
+    func bump(_ id: Int) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        let c = items.remove(at: i)
+        c.time = Date()
+        items.insert(c, at: 0)
+        onChange?()
+    }
+
+    func remove(_ ids: Set<Int>) {
+        items.removeAll { ids.contains($0.id) }
+        onChange?()
+    }
+
+    func clear() {
+        items.removeAll()
+        onChange?()
+    }
+
+    /// Status clip berubah (mis. sudah terkirim)
+    func changed() { onChange?() }
+
+    private func trim() {
+        if items.count > limit { items.removeLast(items.count - limit) }
+        while items.count > 1, items.reduce(0, { $0 + ($1.data?.count ?? 0) }) > maxImageBytes { items.removeLast() }
+    }
+}
+
 // MARK: - Keychain (token perangkat; tidak pernah ditulis ke file pengaturan)
 
 enum Keychain {
@@ -257,11 +385,9 @@ struct Clip: Decodable {
     let size: Int
     let from: String   // nama perangkat pengirim
     let device: String // id perangkat pengirim
+    let time: Double?  // ms sejak epoch
 
-    /// Cuplikan satu baris untuk daftar riwayat di menu
-    var title: String { clipTitle(kind: kind, text: text, mime: mime, size: size) }
-    /// Keterangan pengirim (tooltip di menu)
-    func source(me: String) -> String { device == me ? "Dari Mac ini" : "Dari \(from)" }
+    var date: Date { time.map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date() }
 }
 
 /// Klien server PasteLAN: login dengan password → token Bearer, long-poll item baru, kirim teks / gambar.
@@ -275,7 +401,8 @@ final class PasteServer {
     private(set) var state = State.loggedOut
     private(set) var items: [Clip] = [] // riwayat dari server, terlama di depan
     private(set) var running = false
-    var onIncoming: ((Clip) -> Void)?   // item baru dari perangkat lain
+    var onIncoming: ((Clip) -> Void)?   // item baru dari perangkat lain (langsung ditempel ke clipboard)
+    var onSeen: ((Clip) -> Void)?       // item yang sudah ada di server saat (baru) tersambung → hanya masuk riwayat
     var onChange: (() -> Void)?         // status / riwayat berubah
     var onUnauthorized: (() -> Void)?   // token dicabut / tidak berlaku lagi
 
@@ -340,7 +467,7 @@ final class PasteServer {
         stop()
         self.base = base
         token = nil
-        let body = try? JSONSerialization.data(withJSONObject: ["password": password, "name": name])
+        let body = try? JSONSerialization.data(withJSONObject: ["password": password, "name": name, "client": "mac"])
         send(request("POST", "/api/login", body: body, type: "application/json")) { status, data, err in
             guard status == 200, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let t = j["token"] as? String else { return done(nil, PasteServer.errorText(data, status, err)) }
@@ -366,7 +493,7 @@ final class PasteServer {
         stop()
         self.base = base
         token = nil
-        let body = try? JSONSerialization.data(withJSONObject: ["code": code, "name": name])
+        let body = try? JSONSerialization.data(withJSONObject: ["code": code, "name": name, "client": "mac"])
         send(request("POST", "/api/pair/claim", body: body, type: "application/json")) { status, data, err in
             guard status == 200, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let t = j["token"] as? String else { return done(nil, PasteServer.errorText(data, status, err)) }
@@ -450,7 +577,7 @@ final class PasteServer {
         for c in r.items where c.id > after {
             items.append(c)
             after = c.id
-            if primed, c.device != me { onIncoming?(c) }
+            if !primed { onSeen?(c) } else if c.device != me { onIncoming?(c) }
         }
         if let ids = r.ids {
             let keep = Set(ids)
@@ -465,12 +592,15 @@ final class PasteServer {
 
     // MARK: mengirim
 
-    func sendText(_ s: String) { post("/api/text", Data(s.utf8), "text/plain; charset=utf-8") }
-    func sendImage(_ d: Data) { post("/api/image", d, "application/octet-stream") } // jenis gambar dicek server dari isinya
+    /// done(id item di server) setelah terkirim, atau done(nil) kalau gagal
+    func sendText(_ s: String, _ done: ((Int?) -> Void)? = nil) { post("/api/text", Data(s.utf8), "text/plain; charset=utf-8", done) }
+    func sendImage(_ d: Data, _ done: ((Int?) -> Void)? = nil) { post("/api/image", d, "application/octet-stream", done) } // jenis gambar dicek server dari isinya
 
-    private func post(_ path: String, _ body: Data, _ type: String) {
-        send(request("POST", path, body: body, type: type)) { status, _, _ in
+    private func post(_ path: String, _ body: Data, _ type: String, _ done: ((Int?) -> Void)?) {
+        send(request("POST", path, body: body, type: type)) { status, data, _ in
             if status == 401 { self.unauthorized() }
+            let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            done?(status == 200 ? (j?["id"] as? NSNumber)?.intValue : nil)
         }
     }
 
@@ -1141,6 +1271,8 @@ enum Page {
     h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:20px 4px 8px}
     #toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);background:rgba(0,0,0,.85);color:#fff;padding:8px 14px;border-radius:20px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90%;text-align:center}
     #toast.show{opacity:1}
+    .search{width:100%;margin:0 0 12px;border:1px solid var(--line);border-radius:10px;padding:10px;font:inherit;background:var(--card);color:inherit;-webkit-appearance:none;appearance:none}
+    .item.hide,[hidden]{display:none!important}
     </style>
     </head>
     <body>
@@ -1156,6 +1288,8 @@ enum Page {
         <div class="hint">Setelah terkirim, tekan ⌘V di Mac. Gambar juga bisa ditempel langsung di kotak teks.</div>
       </div>
       <h2>Clipboard</h2>
+      <input id="search" class="search" type="search" placeholder="Cari clip…" autocomplete="off" aria-label="Cari clip">
+      <div id="noMatch" class="empty" hidden></div>
       <div id="list"></div>
     </main>
     <div id="toast"></div>
@@ -1339,7 +1473,23 @@ enum Page {
 
       function showEmpty() {
         if (!$('list').children.length) $('list').innerHTML = '<div class="empty">Belum ada apa-apa. Copy sesuatu di Mac (⌘C), atau kirim dari HP ini.</div>';
+        filter();
       }
+      // pencarian (isi teks; gambar cocok dengan "gambar")
+      function filter() {
+        const q = $('search').value.trim().toLowerCase();
+        let shown = 0, total = 0;
+        for (const c of $('list').children) {
+          if (c.searchText == null) continue;
+          total++;
+          const hit = !q || c.searchText.includes(q);
+          c.classList.toggle('hide', !hit);
+          if (hit) shown++;
+        }
+        $('noMatch').hidden = !q || !total || shown > 0;
+        $('noMatch').textContent = 'Tidak ada clip yang cocok dengan "' + $('search').value.trim() + '".';
+      }
+      $('search').addEventListener('input', filter);
       function expired() {
         stopped = true;
         setStatus('off', 'Link tidak berlaku');
@@ -1407,6 +1557,7 @@ enum Page {
         const empty = list.querySelector('.empty');
         if (empty) empty.remove();
         const card = el('div', 'card item');
+        card.searchText = (it.kind === 'text' ? it.text : 'gambar image ' + (it.mime || '')).toLowerCase();
         const meta = el('div', 'meta');
         const time = new Date(it.time).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
         meta.append(el('span', '', it.from === 'mac' ? '💻 Dari Mac' : '📱 Dari HP'), el('span', '', time));
@@ -1442,6 +1593,7 @@ enum Page {
           if (list.lastChild.blobURL) URL.revokeObjectURL(list.lastChild.blobURL);
           list.lastChild.remove();
         }
+        filter();
       }
 
       // HTTP lokal bukan "secure context" → navigator.clipboard sering tidak ada, pakai cara lama
@@ -1715,7 +1867,7 @@ final class Updater: NSObject {
 
 // MARK: - Aplikasi
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSSearchFieldDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
     let d = UserDefaults.standard
@@ -1724,17 +1876,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let clipboard = Clipboard()
     lazy var lan = LANServer(clipboard: clipboard)
     let macName = computerName()
+    let history = History()
+    lazy var settings = SettingsWindow(app: self)
+    let searchField = NSSearchField(frame: NSRect(x: 14, y: 4, width: 272, height: 24))
     var flashTimer: Timer?
+    var menuOpen = false
 
+    /// Sinkron dengan server / HP. Mati = hanya clipboard manager di Mac ini (riwayat tetap dicatat).
     var sharing: Bool { d.bool(forKey: "sharing") }
     var autoSend: Bool { d.bool(forKey: "autoSend") }
     var serverURL: URL? { d.string(forKey: "serverURL").flatMap(PasteServer.normalize) }
     var loggedIn: Bool { server.token != nil }
+    /// Sinkron aktif dan metodenya siap (Wi-Fi lokal, atau sudah login ke server)
+    var syncActive: Bool { sharing && (lanMode || loggedIn) }
+    /// Jumlah clip yang diingat di riwayat Mac
+    var historyLimit: Int { max(5, d.integer(forKey: "historyLimit")) }
+    static let historyLimits = [10, 15, 20, 30, 50, 100]
     /// Metode: "server" (default, lewat server PasteLAN) atau "lan" (Wi-Fi lokal tanpa server)
     var lanMode: Bool { d.string(forKey: "mode") == "lan" }
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        d.register(defaults: ["sharing": true, "autoSend": true, "saveImages": false, "mode": "server"])
+        d.register(defaults: ["sharing": true, "autoSend": true, "saveImages": false, "mode": "server", "historyLimit": 15])
         d.removeObject(forKey: "token") // link Wi-Fi lokal lama (v0.1.x, token di ?t=) tidak berlaku lagi
 
         item.autosaveName = "PasteLAN" // posisi ikon diingat
@@ -1746,10 +1908,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         server.configure(base: serverURL, token: Keychain.token)
         server.onChange = { [weak self] in self?.updateIcon() }
         server.onIncoming = { [weak self] c in self?.receive(c) }
+        server.onSeen = { [weak self] c in self?.seen(c) }
         server.onUnauthorized = { [weak self] in self?.loginExpired() }
         lan.http.onChange = { [weak self] in self?.updateIcon() }
         lan.onPhone = { [weak self] c in self?.receivedFromLAN(c) }
-        clipboard.onChange = { [weak self] in self?.sendClipboard() }
+        clipboard.onChange = { [weak self] in self?.copiedOnMac() }
+        history.limit = historyLimit
+        history.onChange = { [weak self] in self?.historyChanged() }
+        searchField.placeholderString = "Cari clip…"
+        searchField.sendsSearchStringImmediately = true
+        searchField.delegate = self
+        NSApp.mainMenu = editMenu()
 
         applySharing()
         updater.start()
@@ -1783,14 +1952,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             server.stop()
             lan.stop()
         }
-        if active, autoSend { clipboard.startWatching() } else { clipboard.stopWatching() }
+        clipboard.startWatching() // riwayat Mac selalu dicatat (clipboard manager), juga saat sinkron mati
         updateIcon()
+        settings.reload()
+    }
+
+    /// Aplikasi menu bar tidak punya menu utama → tanpa ini ⌘C / ⌘V / ⌘A / ⌘W tidak jalan di jendela & dialog
+    func editMenu() -> NSMenu {
+        let main = NSMenu()
+        let edit = NSMenu(title: "Edit")
+        for (title, action, key) in [("Urungkan", Selector(("undo:")), "z"), ("Potong", #selector(NSText.cut(_:)), "x"),
+                                     ("Salin", #selector(NSText.copy(_:)), "c"), ("Tempel", #selector(NSText.paste(_:)), "v"),
+                                     ("Pilih semua", #selector(NSText.selectAll(_:)), "a"),
+                                     ("Tutup jendela", #selector(NSWindow.performClose(_:)), "w")] {
+            edit.addItem(NSMenuItem(title: title, action: action, keyEquivalent: key))
+        }
+        let it = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        it.submenu = edit
+        main.addItem(it)
+        return main
     }
 
     func updateIcon() {
         guard let b = item.button else { return }
         if flashTimer == nil { b.image = symbol("paperclip") }
         b.appearsDisabled = !sharing || (lanMode ? !lan.running : server.state != .connected)
+        settings.reloadStatus()
     }
 
     /// Ikon ✓ sebentar saat menerima sesuatu dari HP
@@ -1803,32 +1990,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    func sendClipboard() {
-        guard sharing, let c = clipboard.read() else { return }
-        if lanMode { return lan.add(c) }
-        guard loggedIn else { return }
-        if let text = c.text { server.sendText(text) }
-        else if let data = c.data { server.sendImage(data) }
+    /// Setiap copy di Mac masuk riwayat; dikirim ke server / HP hanya kalau sinkron & kirim otomatis aktif.
+    /// Copy selama sinkron mati tetap "Hanya di Mac" (tidak ikut terkirim saat sinkron dinyalakan lagi).
+    func copiedOnMac() {
+        guard let c = clipboard.read() else { return }
+        let clip = history.add(c, from: "", synced: false)
+        if syncActive, autoSend { push(clip) }
     }
 
-    /// Item baru dari perangkat lain → langsung masuk clipboard Mac
+    /// "Kirim clipboard Mac sekarang"
+    func sendClipboard() {
+        guard syncActive, let c = clipboard.read() else { return }
+        push(history.add(c, from: "", synced: false))
+    }
+
+    /// Kirim clip dari riwayat Mac ke server / HP. false kalau tidak bisa (sinkron mati, atau gambar tanpa isi).
+    @discardableResult
+    func push(_ c: LocalClip) -> Bool {
+        guard syncActive else { return false }
+        let content: PasteContent
+        if let text = c.text { content = PasteContent(kind: "text", text: text, data: nil, mime: nil) }
+        else if let data = c.data { content = PasteContent(kind: "image", text: nil, data: data, mime: c.mime) }
+        else { return false }
+        if lanMode {
+            lan.add(content)
+            c.synced = true
+            history.changed()
+            return true
+        }
+        let done: (Int?) -> Void = { [weak self] id in
+            guard let id else { return }
+            c.synced = true
+            c.serverID = id
+            self?.history.changed()
+        }
+        if let text = content.text { server.sendText(text, done) } else if let data = content.data { server.sendImage(data, done) }
+        return true
+    }
+
+    /// Item baru dari perangkat lain → langsung masuk clipboard Mac (dan riwayat)
     func receive(_ c: Clip) {
         if c.kind == "text", let text = c.text {
             clipboard.writeText(text)
+            history.add(kind: "text", text: text, data: nil, mime: nil, size: c.size, from: c.from, synced: true, serverID: c.id)
             flash()
         } else if c.kind == "image" {
             server.image(c.id) { [weak self] data in
                 guard let self, let data, self.clipboard.writeImage(data, mime: c.mime) else { return }
+                self.history.add(kind: "image", text: nil, data: data, mime: c.mime, size: data.count, from: c.from,
+                                 synced: true, serverID: c.id)
                 if self.d.bool(forKey: "saveImages") { self.saveToDownloads(data, mime: c.mime) }
                 self.flash()
             }
         }
     }
 
+    /// Item yang sudah ada di server saat Mac (baru) tersambung: hanya masuk riwayat, tidak ditempel ke clipboard.
+    /// Isi gambar baru diambil saat clip itu dipilih.
+    func seen(_ c: Clip) {
+        let mine = c.device == server.me
+        history.add(kind: c.kind, text: c.text, data: nil, mime: c.mime, size: c.size, from: mine ? "" : c.from,
+                    synced: true, serverID: c.id, time: c.date, bump: false)
+    }
+
     /// Item dari HP lewat Wi-Fi lokal (sudah masuk clipboard Mac)
     func receivedFromLAN(_ c: LANClip) {
+        history.add(kind: c.kind, text: c.text, data: c.data, mime: c.mime, size: c.size, from: "HP", synced: true)
         if c.kind == "image", let data = c.data, d.bool(forKey: "saveImages") { saveToDownloads(data, mime: c.mime) }
         flash()
+    }
+
+    func historyChanged() {
+        if menuOpen { refreshHistoryItems() }
+        settings.reloadClips()
     }
 
     /// Pertama kali dipakai: pengguna memilih sendiri apakah setiap copy di Mac langsung tersedia untuk HP
@@ -1836,7 +2070,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let a = NSAlert()
         a.messageText = "Kirim setiap copy di Mac ke HP secara otomatis?"
         a.informativeText = "Kalau ya, semua yang Anda copy (⌘C) di Mac langsung muncul di HP yang login ke server PasteLAN. " +
-            "Kalau tidak, kirim manual lewat menu \"Kirim clipboard Mac sekarang\". Bisa diubah kapan saja di menu."
+            "Kalau tidak, kirim manual lewat menu \"Kirim clipboard Mac sekarang\". Bisa diubah kapan saja di Pengaturan."
         a.addButton(withTitle: "Ya, otomatis")
         a.addButton(withTitle: "Manual saja")
         NSApp.activate(ignoringOtherApps: true)
@@ -1925,8 +2159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Token Mac ini dicabut (dari halaman PasteLAN) / tidak berlaku lagi
     func loginExpired() {
         Keychain.token = nil
-        clipboard.stopWatching()
-        updateIcon()
+        applySharing()
         showError("Login PasteLAN berakhir", "Mac ini dikeluarkan dari server PasteLAN (perangkat dicabut atau server diganti). Login lagi?")
     }
 
@@ -1979,7 +2212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusText: String {
         let host = serverURL?.host ?? "server"
         guard loggedIn else { return "Belum login ke server PasteLAN" }
-        guard sharing else { return "Berbagi dimatikan" }
+        guard sharing else { return "Sinkron mati · hanya clipboard manager" }
         switch server.state {
         case .loggedOut: return "Belum login ke server PasteLAN"
         case .connecting: return "Menghubungkan ke \(host)…"
@@ -1988,61 +2221,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Susunan menu (gaya Clipy): riwayat clip langsung di atas (⌘0–⌘9 untuk 10 teratas), lalu status & tambah HP,
-    /// lalu semua pengaturan di submenu "Pengaturan", terakhir "Keluar".
+    /// Susunan menu (gaya Clipy): kotak cari + riwayat clip di atas (⌘0–⌘9 untuk 10 teratas), lalu status & tambah HP,
+    /// lalu sinkron, clipboard manager & Pengaturan (jendela sendiri), terakhir "Keluar".
     func menuNeedsUpdate(_ m: NSMenu) {
         menu.removeAllItems()
-        updater.menuItem.menu?.removeItem(updater.menuItem) // masih tercantol di submenu Pengaturan yang lama
+        updater.menuItem.menu?.removeItem(updater.menuItem)
+        searchField.stringValue = ""
 
         addHistorySection()
         menu.addItem(.separator())
         if lanMode { addLANSection() } else { addServerSection() }
+        if syncActive { add("Kirim clipboard Mac sekarang", #selector(sendNow)) }
         menu.addItem(.separator())
-        let pref = NSMenuItem(title: "Pengaturan", action: nil, keyEquivalent: "")
+        let sync = add(lanMode ? "Sinkron dengan HP (Wi-Fi lokal)" : "Sinkron dengan server & browser", #selector(toggleSharing), on: sharing)
+        sync.toolTip = "Matikan untuk memakai PasteLAN sebagai clipboard manager saja. Saat dinyalakan lagi, hanya copy baru yang dikirim."
+        let manager = add("Clipboard manager…", #selector(openClipboardManager))
+        manager.image = symbol("list.bullet.rectangle")
+        let pref = add("Pengaturan…", #selector(openSettings))
+        pref.keyEquivalent = ","
         pref.image = symbol("gearshape")
-        pref.submenu = settingsMenu()
-        menu.addItem(pref)
+        if updater.hasUpdate { menu.addItem(updater.menuItem) }
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Keluar PasteLAN", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
+    func menuWillOpen(_ m: NSMenu) { menuOpen = true }
+    func menuDidClose(_ m: NSMenu) { menuOpen = false }
+
+    /// Pencarian di menu: daftar clip disaring setiap huruf diketik (menu tetap terbuka)
+    func controlTextDidChange(_ n: Notification) {
+        if (n.object as? NSSearchField) === searchField { refreshHistoryItems() }
+    }
+
     /// Jumlah clip yang tampil langsung di menu; sisanya di submenu "Riwayat lainnya"
     let inlineClips = 20
+    let historyTag = 77
+
+    lazy var searchBox: NSView = {
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 32))
+        self.searchField.autoresizingMask = [.width]
+        v.addSubview(self.searchField)
+        return v
+    }()
 
     func addHistorySection() {
-        let head = NSMenuItem(title: "Pilih clip untuk disalin ke clipboard", action: nil, keyEquivalent: "")
-        head.isEnabled = false
-        menu.addItem(head)
-        let entries: [(id: Int, title: String, tip: String)] = lanMode
-            ? lan.store.items.reversed().map { ($0.id, $0.title, $0.source) }
-            : server.items.reversed().map { ($0.id, $0.title, $0.source(me: server.me)) }
-        if entries.isEmpty {
-            let e = NSMenuItem(title: "Belum ada riwayat. Copy sesuatu di Mac atau kirim dari HP.", action: nil, keyEquivalent: "")
+        let search = NSMenuItem()
+        search.view = searchBox
+        menu.addItem(search)
+        insertHistoryItems(at: menu.numberOfItems)
+        menu.addItem(.separator())
+        let clear = add("Hapus riwayat…", #selector(clearHistory), enabled: !history.items.isEmpty)
+        clear.tag = historyTag + 1
+    }
+
+    /// Baris clip (bertanda historyTag) disisipkan mulai `start`; dipanggil ulang saat pencarian / riwayat berubah
+    func insertHistoryItems(at start: Int) {
+        var i = start
+        func put(_ it: NSMenuItem) {
+            it.tag = historyTag
+            menu.insertItem(it, at: i)
+            i += 1
+        }
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let list = history.items.filter { $0.matches(query) }
+        if list.isEmpty {
+            let e = NSMenuItem(title: history.items.isEmpty ? "Belum ada riwayat. Copy sesuatu di Mac atau kirim dari HP."
+                                                            : "Tidak ada clip yang cocok dengan \"\(query)\"",
+                               action: nil, keyEquivalent: "")
             e.isEnabled = false
-            menu.addItem(e)
+            put(e)
         }
         var more: NSMenu?
-        for (i, c) in entries.enumerated() {
-            // ⌘0 … ⌘9 untuk sepuluh clip terbaru (berlaku selama menu terbuka)
-            let it = NSMenuItem(title: c.title, action: #selector(recopy(_:)), keyEquivalent: i < 10 ? "\(i)" : "")
+        for (n, c) in list.enumerated() {
+            // ⌘0 … ⌘9 untuk sepuluh clip teratas (berlaku selama menu terbuka)
+            let it = NSMenuItem(title: c.title, action: #selector(recopy(_:)), keyEquivalent: n < 10 ? "\(n)" : "")
             it.target = self
             it.representedObject = c.id
-            it.toolTip = "\(c.tip) · klik untuk menyalin ke clipboard Mac"
-            if i < inlineClips {
-                menu.addItem(it)
+            it.toolTip = "Dari \(c.source)" + (c.pending ? " · belum dikirim ke server / HP" : "") + " · klik untuk menyalin ke clipboard Mac"
+            if n < inlineClips {
+                put(it)
             } else {
                 if more == nil {
-                    more = NSMenu()
-                    more?.autoenablesItems = false
-                    let mi = NSMenuItem(title: "Riwayat lainnya (\(entries.count - inlineClips))", action: nil, keyEquivalent: "")
-                    mi.submenu = more
-                    menu.addItem(mi)
+                    let sub = NSMenu()
+                    sub.autoenablesItems = false
+                    let mi = NSMenuItem(title: "Riwayat lainnya (\(list.count - inlineClips))", action: nil, keyEquivalent: "")
+                    mi.submenu = sub
+                    put(mi)
+                    more = sub
                 }
                 more?.addItem(it)
             }
         }
-        menu.addItem(.separator())
-        add(lanMode ? "Hapus semua riwayat" : "Hapus semua riwayat (semua perangkat)", #selector(clearHistory), enabled: !entries.isEmpty)
+    }
+
+    func refreshHistoryItems() {
+        guard let first = menu.items.firstIndex(where: { $0.tag == historyTag }) else { return }
+        for it in menu.items where it.tag == historyTag { menu.removeItem(it) }
+        insertHistoryItems(at: first)
+        menu.items.first(where: { $0.tag == historyTag + 1 })?.isEnabled = !history.items.isEmpty
     }
 
     func addServerSection() {
@@ -2061,7 +2337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Wi-Fi lokal: status di menu utama, QR code & link di submenu "Tambah HP" supaya menu tetap ringkas
     func addLANSection() {
         guard sharing else {
-            let st = NSMenuItem(title: "Berbagi dimatikan", action: nil, keyEquivalent: "")
+            let st = NSMenuItem(title: "Sinkron mati · hanya clipboard manager", action: nil, keyEquivalent: "")
             st.isEnabled = false
             st.image = statusDot(false)
             menu.addItem(st)
@@ -2103,44 +2379,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         pair.submenu = pm
         menu.addItem(pair)
-    }
-
-    /// Submenu "Pengaturan": semua opsi yang jarang diubah
-    func settingsMenu() -> NSMenu {
-        let pm = NSMenu()
-        pm.autoenablesItems = false
-        add("Berbagi aktif", #selector(toggleSharing), on: sharing, to: pm)
-        let method = NSMenuItem(title: lanMode ? "Metode: Wi-Fi lokal" : "Metode: Server PasteLAN", action: nil, keyEquivalent: "")
-        let mm = NSMenu()
-        mm.autoenablesItems = false
-        for (title, action, on) in [("Server PasteLAN (internet, bisa di-install di HP)", #selector(useServerMode), !lanMode),
-                                    ("Wi-Fi lokal (tanpa server, HP di jaringan yang sama)", #selector(useLANMode), lanMode)] {
-            add(title, action, on: on, to: mm)
-        }
-        method.submenu = mm
-        pm.addItem(method)
-
-        pm.addItem(.separator())
-        add("Kirim clipboard Mac otomatis", #selector(toggleAutoSend), on: autoSend, to: pm)
-        add("Kirim clipboard Mac sekarang", #selector(sendNow), enabled: sharing && (lanMode || loggedIn), to: pm)
-        add("Simpan juga gambar dari HP ke Unduhan", #selector(toggleSaveImages), on: d.bool(forKey: "saveImages"), to: pm)
-
-        pm.addItem(.separator())
-        if lanMode {
-            add("Reset link (putuskan semua HP)…", #selector(resetLink), to: pm)
-        } else if loggedIn, serverURL != nil {
-            add("Ganti server…", #selector(setupServer), to: pm)
-            add("Keluar dari server…", #selector(logoutServer), to: pm)
-        } else {
-            add("Atur server & login…", #selector(setupServer), to: pm)
-        }
-
-        pm.addItem(.separator())
-        add("Buka saat login", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled, to: pm)
-        add("Cara pakai…", #selector(showHelp), to: pm)
-        pm.addItem(updater.menuItem)
-        add("Uninstall PasteLAN…", #selector(uninstall), to: pm)
-        return pm
     }
 
     /// Titik status kecil (hijau = tersambung, abu-abu = tidak) di depan baris status
@@ -2197,6 +2435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: aksi
 
+    /// Sinkron dinyalakan lagi → hanya copy berikutnya yang dikirim; riwayat lama bisa dikirim dari Clipboard manager
     @objc func toggleSharing() {
         d.set(!sharing, forKey: "sharing")
         applySharing()
@@ -2204,6 +2443,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func toggleAutoSend() {
         d.set(!autoSend, forKey: "autoSend")
         applySharing()
+    }
+    @objc func openSettings() { settings.show(.general) }
+    @objc func openClipboardManager() { settings.show(.clipboard) }
+    func setHistoryLimit(_ n: Int) {
+        d.set(n, forKey: "historyLimit")
+        history.limit = historyLimit
     }
     @objc func toggleSaveImages() {
         d.set(!d.bool(forKey: "saveImages"), forKey: "saveImages")
@@ -2220,24 +2465,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sendClipboard()
     }
     @objc func recopy(_ s: NSMenuItem) {
-        guard let id = s.representedObject as? Int else { return }
-        if lanMode {
-            guard let c = lan.store.clip(id) else { return }
-            if let text = c.text { clipboard.writeText(text) }
-            else if let data = c.data { _ = clipboard.writeImage(data, mime: c.mime) }
-            return
-        }
-        guard let c = server.items.first(where: { $0.id == id }) else { return }
+        if let id = s.representedObject as? Int { copyToClipboard(id) }
+    }
+    /// Salin clip dari riwayat ke clipboard Mac (tidak dikirim ulang ke server); clip itu naik ke paling atas
+    func copyToClipboard(_ id: Int) {
+        guard let c = history.clip(id) else { return }
         if let text = c.text { clipboard.writeText(text) }
-        else if c.kind == "image" {
-            server.image(id) { [weak self] data in
-                if let data { _ = self?.clipboard.writeImage(data, mime: c.mime) }
+        else if let data = c.data { _ = clipboard.writeImage(data, mime: c.mime) }
+        else if let sid = c.serverID, !lanMode, loggedIn {
+            server.image(sid) { [weak self] data in
+                guard let self, let data else { return }
+                c.data = data
+                _ = self.clipboard.writeImage(data, mime: c.mime)
             }
         }
+        history.bump(id)
     }
     @objc func clearHistory() {
-        // semua perangkat menerima session baru → daftarnya dikosongkan
-        if lanMode { lan.clearHistory() } else { server.clearHistory() }
+        let a = NSAlert()
+        let remote = lanMode ? "HP" : "server"
+        a.messageText = "Hapus riwayat clipboard?"
+        a.informativeText = syncActive
+            ? "Riwayat di Mac ini dikosongkan. Pilih \"Hapus juga di \(remote)\" untuk mengosongkan riwayat di semua perangkat."
+            : "Riwayat di Mac ini dikosongkan. Riwayat di \(remote) tidak berubah."
+        a.addButton(withTitle: "Hapus di Mac ini")
+        a.addButton(withTitle: "Batal")
+        if syncActive { a.addButton(withTitle: "Hapus juga di \(remote)") }
+        NSApp.activate(ignoringOtherApps: true)
+        switch a.runModal() {
+        case .alertFirstButtonReturn:
+            history.clear()
+        case .alertThirdButtonReturn:
+            history.clear()
+            // semua perangkat menerima session baru → daftarnya dikosongkan
+            if lanMode { lan.clearHistory() } else { server.clearHistory() }
+        default: break
+        }
     }
     @objc func useServerMode() { setMode("server") }
     @objc func useLANMode() { setMode("lan") }
@@ -2300,11 +2563,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Perangkat yang hilang bisa dicabut dari halaman PasteLAN → Pengaturan.
 
         Riwayat: klik salah satu clip di bagian atas menu (atau tekan ⌘0–⌘9 saat menu terbuka) untuk menyalinnya \
-        lagi ke clipboard Mac.
+        lagi ke clipboard Mac. Klik kotak "Cari clip…" di menu untuk mencari. Jumlah clip yang diingat diatur di \
+        Pengaturan → Umum.
 
-        Tanpa server: menu → Pengaturan → Metode → "Wi-Fi lokal". Mac dan HP harus di Wi-Fi yang sama (atau Mac memakai \
+        Clipboard manager saja: matikan "Sinkron dengan server & browser" di menu. Semua copy tetap masuk riwayat Mac, \
+        tapi tidak dikirim. Saat dinyalakan lagi hanya copy baru yang dikirim; clip lama bisa dicentang lalu dikirim \
+        dari menu → "Clipboard manager…".
+
+        Tanpa server: menu → Pengaturan → Koneksi → "Wi-Fi lokal". Mac dan HP harus di Wi-Fi yang sama (atau Mac memakai \
         hotspot HP); scan QR code di menu → "Tambah HP". Isi dienkripsi dengan kunci di QR code. Wi-Fi kantor / kampus / \
-        publik sering memblokir antar-perangkat. Pengaturan → "Reset link" memutus semua HP yang pernah terhubung.
+        publik sering memblokir antar-perangkat. Pengaturan → Koneksi → "Reset link" memutus semua HP yang pernah terhubung.
         """
         NSApp.activate(ignoringOtherApps: true)
         a.runModal()
@@ -2351,6 +2619,548 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         NSApp.terminate(nil)
     }
+}
+
+// MARK: - Jendela Pengaturan (tab Umum, Koneksi, Clipboard, Tentang)
+
+/// Kartu berlatar gaya System Settings; warnanya ikut tema terang / gelap
+final class CardView: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError("tidak dipakai") }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        layer?.borderColor = NSColor.separatorColor.cgColor
+        layer?.borderWidth = 1
+        layer?.cornerRadius = 8
+    }
+}
+
+/// Potongan tata letak formulir: setiap baris = judul + keterangan di kiri, satu kontrol di kanan.
+/// Pilihan nyala / mati selalu NSSwitch, aksi selalu tombol berlabel kata kerja → mudah dibedakan.
+enum Form {
+    static func label(_ s: String, size: CGFloat = 13, weight: NSFont.Weight = .regular) -> NSTextField {
+        let l = NSTextField(labelWithString: s)
+        l.font = .systemFont(ofSize: size, weight: weight)
+        return l
+    }
+
+    static func note(_ s: String, width: CGFloat = 380) -> NSTextField {
+        let l = NSTextField(wrappingLabelWithString: s)
+        l.font = .systemFont(ofSize: 11)
+        l.textColor = .secondaryLabelColor
+        l.preferredMaxLayoutWidth = width
+        return l
+    }
+
+    static func stack(_ views: [NSView], vertical: Bool = true, spacing: CGFloat = 8) -> NSStackView {
+        let v = NSStackView(views: views)
+        v.orientation = vertical ? .vertical : .horizontal
+        v.alignment = vertical ? .leading : .centerY
+        v.spacing = spacing
+        return v
+    }
+
+    static func row(_ title: String, _ detail: String?, _ control: NSView?) -> NSView {
+        row(label(title, weight: .medium), detail, control)
+    }
+
+    static func row(_ head: NSView, _ detail: String?, _ control: NSView?) -> NSView {
+        var texts: [NSView] = [head]
+        if let detail { texts.append(note(detail, width: control == nil ? 540 : 380)) }
+        let left = stack(texts, spacing: 3)
+        left.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        left.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let r = stack([left], vertical: false, spacing: 16)
+        if let control {
+            control.setContentHuggingPriority(.required, for: .horizontal)
+            control.setContentCompressionResistancePriority(.required, for: .horizontal)
+            r.addArrangedSubview(control)
+        }
+        return r
+    }
+
+    static func section(_ title: String, _ rows: [NSView]) -> NSView {
+        let card = CardView()
+        let inner = stack([], spacing: 10)
+        inner.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(inner)
+        NSLayoutConstraint.activate([
+            inner.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            inner.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            inner.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            inner.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+        ])
+        for (i, r) in rows.enumerated() {
+            if i > 0 {
+                let sep = NSBox()
+                sep.boxType = .separator
+                inner.addArrangedSubview(sep)
+                sep.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
+            }
+            inner.addArrangedSubview(r)
+            r.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
+        }
+        let out = stack([label(title, weight: .semibold), card], spacing: 6)
+        card.widthAnchor.constraint(equalTo: out.widthAnchor).isActive = true
+        return out
+    }
+
+    static func toggle(_ target: AnyObject, _ action: Selector) -> NSSwitch {
+        let s = NSSwitch()
+        s.target = target
+        s.action = action
+        return s
+    }
+
+    static func button(_ title: String, _ target: AnyObject, _ action: Selector) -> NSButton {
+        let b = NSButton(title: title, target: target, action: action)
+        b.bezelStyle = .rounded
+        return b
+    }
+}
+
+/// Halaman berukuran tetap berisi bagian-bagian formulir dari atas ke bawah
+final class FormPage: NSViewController {
+    override func loadView() {
+        let v = NSView(frame: NSRect(origin: .zero, size: SettingsWindow.size))
+        for c in [v.widthAnchor.constraint(equalToConstant: SettingsWindow.size.width),
+                  v.heightAnchor.constraint(equalToConstant: SettingsWindow.size.height)] {
+            c.priority = .defaultLow
+            c.isActive = true
+        }
+        view = v
+        preferredContentSize = SettingsWindow.size
+    }
+
+    func set(_ sections: [NSView]) {
+        view.subviews.forEach { $0.removeFromSuperview() }
+        let content = Form.stack([], spacing: 18)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),
+            content.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+            content.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
+        ])
+        for s in sections {
+            content.addArrangedSubview(s)
+            s.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+        }
+    }
+}
+
+/// Tab Clipboard: riwayat Mac dengan pencarian; centang clip lalu kirim ke server / HP
+final class ClipboardPage: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+    weak var app: AppDelegate?
+    private let search = NSSearchField()
+    private let table = NSTableView()
+    private let info = NSTextField(labelWithString: "")
+    private let hint = Form.note("", width: 590)
+    private lazy var pendingButton = Form.button("Centang yang belum dikirim", self, #selector(checkPending))
+    private lazy var sendButton = Form.button("Kirim yang dicentang", self, #selector(sendChecked))
+    private lazy var copyButton = Form.button("Salin ke clipboard", self, #selector(copySelected))
+    private lazy var deleteButton = Form.button("Hapus yang dicentang", self, #selector(deleteChecked))
+    private var rows: [LocalClip] = []
+    private var checked = Set<Int>()
+    private let clock: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH.mm"
+        return f
+    }()
+    private let day: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "d MMM HH.mm"
+        return f
+    }()
+
+    override func loadView() {
+        let v = NSView(frame: NSRect(origin: .zero, size: SettingsWindow.size))
+        for c in [v.widthAnchor.constraint(equalToConstant: SettingsWindow.size.width),
+                  v.heightAnchor.constraint(equalToConstant: SettingsWindow.size.height)] {
+            c.priority = .defaultLow
+            c.isActive = true
+        }
+        preferredContentSize = SettingsWindow.size
+
+        search.placeholderString = "Cari clip…"
+        search.sendsSearchStringImmediately = true
+        search.delegate = self
+        search.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        info.textColor = .secondaryLabelColor
+        info.alignment = .right
+        let top = Form.stack([search, info], vertical: false, spacing: 12)
+
+        for (id, title, width) in [("check", "", 24), ("title", "Isi", 300), ("from", "Dari", 96), ("time", "Waktu", 78),
+                                   ("status", "Status", 88)] as [(String, String, CGFloat)] {
+            let c = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
+            c.title = title
+            c.width = width
+            c.minWidth = width
+            if id == "check" { c.headerToolTip = "Centang clip yang ingin dikirim / dihapus" }
+            table.addTableColumn(c)
+        }
+        table.columnAutoresizingStyle = .noColumnAutoresizing
+        table.style = .fullWidth
+        table.usesAlternatingRowBackgroundColors = true
+        table.allowsMultipleSelection = false
+        table.rowHeight = 24
+        table.dataSource = self
+        table.delegate = self
+        table.target = self
+        table.doubleAction = #selector(doubleClicked)
+        let scroll = NSScrollView()
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+
+        sendButton.bezelColor = .controlAccentColor // aksi utama; sengaja tanpa Enter (Enter dipakai kotak cari)
+        let bottom = NSStackView()
+        bottom.spacing = 8
+        bottom.addView(pendingButton, in: .leading)
+        bottom.addView(sendButton, in: .leading)
+        bottom.addView(copyButton, in: .trailing)
+        bottom.addView(deleteButton, in: .trailing)
+
+        for x in [top, scroll, hint, bottom] as [NSView] {
+            x.translatesAutoresizingMaskIntoConstraints = false
+            v.addSubview(x)
+            x.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 20).isActive = true
+            x.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -20).isActive = true
+        }
+        NSLayoutConstraint.activate([
+            top.topAnchor.constraint(equalTo: v.topAnchor, constant: 20),
+            scroll.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 12),
+            hint.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 8),
+            bottom.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 10),
+            bottom.bottomAnchor.constraint(equalTo: v.bottomAnchor, constant: -20),
+        ])
+        view = v
+        reload()
+    }
+
+    func focusSearch() { view.window?.makeFirstResponder(search) }
+
+    func reload() {
+        guard isViewLoaded, let app else { return }
+        let all = app.history.items
+        rows = all.filter { $0.matches(search.stringValue) }
+        checked.formIntersection(Set(all.map { $0.id }))
+        table.reloadData()
+        let pending = all.filter { $0.pending }.count
+        info.stringValue = "\(all.count) dari maks \(app.historyLimit) clip · \(pending) belum dikirim"
+        let remote = app.lanMode ? "HP (Wi-Fi lokal)" : "server & browser"
+        hint.stringValue = app.syncActive
+            ? "Centang clip lalu klik \"Kirim yang dicentang\" untuk mengirimnya ke \(remote). Klik dua kali sebuah clip untuk menyalinnya ke clipboard Mac."
+            : "Sinkron mati (atau belum login): nyalakan \"Sinkron dengan \(remote)\" di menu PasteLAN atau tab Umum untuk mengirim clip. Klik dua kali sebuah clip untuk menyalinnya ke clipboard Mac."
+        updateButtons()
+    }
+
+    private func updateButtons() {
+        let n = checked.count
+        sendButton.title = n > 0 ? "Kirim \(n) yang dicentang" : "Kirim yang dicentang"
+        sendButton.isEnabled = n > 0 && (app?.syncActive ?? false)
+        deleteButton.isEnabled = n > 0
+        copyButton.isEnabled = table.selectedRow >= 0
+        pendingButton.isEnabled = rows.contains { $0.pending && !checked.contains($0.id) }
+    }
+
+    func controlTextDidChange(_ n: Notification) { reload() }
+    func tableViewSelectionDidChange(_ n: Notification) { updateButtons() }
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard let tableColumn, row < rows.count else { return nil }
+        let c = rows[row]
+        switch tableColumn.identifier.rawValue {
+        case "check":
+            let b = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleCheck(_:)))
+            b.state = checked.contains(c.id) ? .on : .off
+            b.tag = c.id
+            return b
+        case "title": return cell(c.title, .labelColor, tip: c.text.map { String($0.prefix(600)) })
+        case "from": return cell(c.source, .secondaryLabelColor)
+        case "time": return cell(Calendar.current.isDateInToday(c.time) ? clock.string(from: c.time) : day.string(from: c.time),
+                                 .secondaryLabelColor)
+        default: return cell(c.status, c.pending ? .systemOrange : .secondaryLabelColor)
+        }
+    }
+
+    private func cell(_ s: String, _ color: NSColor, tip: String? = nil) -> NSView {
+        let l = NSTextField(labelWithString: s)
+        l.textColor = color
+        l.lineBreakMode = .byTruncatingTail
+        l.toolTip = tip
+        l.translatesAutoresizingMaskIntoConstraints = false
+        let v = NSTableCellView()
+        v.addSubview(l)
+        NSLayoutConstraint.activate([
+            l.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 2),
+            l.trailingAnchor.constraint(lessThanOrEqualTo: v.trailingAnchor, constant: -2),
+            l.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+        ])
+        return v
+    }
+
+    @objc func toggleCheck(_ b: NSButton) {
+        if b.state == .on { checked.insert(b.tag) } else { checked.remove(b.tag) }
+        updateButtons()
+    }
+
+    @objc func checkPending() {
+        for c in rows where c.pending { checked.insert(c.id) }
+        table.reloadData()
+        updateButtons()
+    }
+
+    @objc func sendChecked() {
+        guard let app else { return }
+        // daftar terbaru di depan → kirim dari yang terlama supaya urutan di server sama
+        let list = rows.filter { checked.contains($0.id) }.reversed()
+        let skipped = list.filter { !app.push($0) }.count
+        checked.removeAll()
+        reload()
+        if skipped > 0 {
+            let a = NSAlert()
+            a.messageText = "\(skipped) clip tidak dikirim"
+            a.informativeText = "Gambar yang berasal dari server belum diambil isinya (dan memang sudah ada di server)."
+            a.runModal()
+        }
+    }
+
+    @objc func copySelected() {
+        let r = table.selectedRow
+        guard r >= 0, r < rows.count else { return }
+        app?.copyToClipboard(rows[r].id)
+    }
+
+    @objc func doubleClicked() {
+        let r = table.clickedRow
+        guard r >= 0, r < rows.count else { return }
+        app?.copyToClipboard(rows[r].id)
+    }
+
+    @objc func deleteChecked() {
+        let ids = checked
+        checked.removeAll()
+        app?.history.remove(ids)
+    }
+}
+
+final class SettingsWindow: NSObject {
+    enum Tab: Int { case general, connection, clipboard, about }
+    static let size = NSSize(width: 640, height: 540)
+
+    unowned let app: AppDelegate
+    private var window: NSWindow?
+    private let tabs = NSTabViewController()
+    private let general = FormPage()
+    private let connection = FormPage()
+    private let clips = ClipboardPage()
+    private let about = FormPage()
+    private var signature = ""
+    private var pending = false
+
+    // kontrol tab Umum (dibuat sekali, statusnya diperbarui di tempat supaya animasi NSSwitch tidak terputus)
+    private lazy var syncTitle = Form.label("", weight: .medium)
+    private lazy var syncSwitch = Form.toggle(self, #selector(syncChanged(_:)))
+    private lazy var autoSwitch = Form.toggle(self, #selector(autoSendChanged(_:)))
+    private lazy var imagesSwitch = Form.toggle(self, #selector(saveImagesChanged(_:)))
+    private lazy var loginSwitch = Form.toggle(self, #selector(loginChanged(_:)))
+    private lazy var limitPopup: NSPopUpButton = {
+        let p = NSPopUpButton(frame: .zero, pullsDown: false)
+        for n in AppDelegate.historyLimits {
+            p.addItem(withTitle: "\(n) clip")
+            p.lastItem?.tag = n
+        }
+        p.target = self
+        p.action = #selector(limitChanged(_:))
+        return p
+    }()
+
+    init(app: AppDelegate) {
+        self.app = app
+        super.init()
+    }
+
+    func show(_ tab: Tab) {
+        if window == nil { build() }
+        rebuild()
+        tabs.selectedTabViewItemIndex = tab.rawValue
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+        if tab == .clipboard { clips.focusSearch() }
+    }
+
+    /// Status aplikasi berubah → perbarui isi jendela (digabung, dijalankan setelah aksi yang sedang berjalan selesai)
+    func reload() {
+        guard window != nil, !pending else { return }
+        pending = true
+        DispatchQueue.main.async { [weak self] in
+            self?.pending = false
+            self?.rebuild()
+        }
+    }
+    func reloadStatus() { reload() }
+    func reloadClips() { if window != nil { clips.reload() } }
+
+    private func build() {
+        clips.app = app
+        tabs.tabStyle = .toolbar
+        let pages: [(NSViewController, String, String)] = [(general, "Umum", "gearshape"), (connection, "Koneksi", "network"),
+                                                           (clips, "Clipboard", "list.bullet.rectangle"), (about, "Tentang", "info.circle")]
+        for (vc, title, icon) in pages {
+            vc.title = title
+            let item = NSTabViewItem(viewController: vc)
+            item.label = title
+            item.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)
+            tabs.addTabViewItem(item)
+        }
+        let w = NSWindow(contentViewController: tabs)
+        w.styleMask = [.titled, .closable, .miniaturizable]
+        w.toolbarStyle = .preference
+        w.title = "Pengaturan PasteLAN"
+        w.isReleasedWhenClosed = false
+        w.setContentSize(SettingsWindow.size)
+        w.center()
+        window = w
+
+        general.set([
+            Form.section("Sinkron", [
+                Form.row(syncTitle, "Mati = PasteLAN hanya jadi clipboard manager di Mac ini; semua copy tetap masuk riwayat. " +
+                         "Saat dinyalakan lagi hanya copy baru yang dikirim; clip lama bisa dikirim dari tab Clipboard.", syncSwitch),
+                Form.row("Kirim setiap copy di Mac otomatis",
+                         "Kalau mati, kirim manual lewat menu \"Kirim clipboard Mac sekarang\" atau tab Clipboard.", autoSwitch),
+                Form.row("Simpan gambar dari HP ke Unduhan", "Selain masuk clipboard Mac, gambar yang diterima disimpan di folder Unduhan.",
+                         imagesSwitch),
+            ]),
+            Form.section("Riwayat", [
+                Form.row("Jumlah clip yang diingat", "Riwayat Mac hanya di memori (hilang saat PasteLAN ditutup). " +
+                         "Clip terlama dibuang saat batas tercapai.", limitPopup),
+            ]),
+            Form.section("Sistem", [
+                Form.row("Buka saat login", "PasteLAN otomatis berjalan setiap Mac dinyalakan.", loginSwitch),
+            ]),
+        ])
+    }
+
+    private func rebuild() {
+        guard window != nil else { return }
+        syncTitle.stringValue = app.lanMode ? "Sinkron dengan HP (Wi-Fi lokal)" : "Sinkron dengan server & browser"
+        syncSwitch.state = app.sharing ? .on : .off
+        autoSwitch.state = app.autoSend ? .on : .off
+        imagesSwitch.state = app.d.bool(forKey: "saveImages") ? .on : .off
+        loginSwitch.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        if limitPopup.item(withTitle: "\(app.historyLimit) clip") == nil {
+            limitPopup.addItem(withTitle: "\(app.historyLimit) clip")
+            limitPopup.lastItem?.tag = app.historyLimit
+        }
+        limitPopup.selectItem(withTag: app.historyLimit)
+
+        // Koneksi & Tentang dibangun ulang hanya kalau isinya berubah
+        let flags: [Bool] = [app.lanMode, app.sharing, app.loggedIn, app.updater.hasUpdate, app.lan.shareURL != nil]
+        let sig = flags.map { $0 ? "1" : "0" }.joined() + connectionLine + (app.serverURL?.absoluteString ?? "")
+        if sig != signature {
+            signature = sig
+            connection.set(connectionSections())
+            about.set(aboutSections())
+        }
+        clips.reload()
+    }
+
+    private var connected: Bool {
+        app.lanMode ? app.sharing && app.lan.running && app.lan.shareURL != nil
+                    : app.sharing && app.loggedIn && app.server.state == .connected
+    }
+
+    private var connectionLine: String {
+        guard app.lanMode else { return app.statusText }
+        let lan = app.lan
+        if !app.sharing { return "Sinkron mati · hanya clipboard manager" }
+        if lan.http.failed { return "Server Wi-Fi lokal gagal berjalan: port \(lan.port)–\(lan.port + 11) sibuk" }
+        if !lan.running { return "Menyalakan server Wi-Fi lokal…" }
+        if lan.shareURL == nil { return "Mac belum terhubung ke Wi-Fi / jaringan lokal" }
+        let n = lan.connectedCount
+        return n > 0 ? "Wi-Fi lokal aktif · \(n) HP terhubung" : "Wi-Fi lokal aktif · belum ada HP terhubung"
+    }
+
+    private func connectionSections() -> [NSView] {
+        let server = NSButton(radioButtonWithTitle: "Server PasteLAN", target: self, action: #selector(useServer))
+        server.state = app.lanMode ? .off : .on
+        let lan = NSButton(radioButtonWithTitle: "Wi-Fi lokal", target: self, action: #selector(useLAN))
+        lan.state = app.lanMode ? .on : .off
+        let method = Form.section("Metode", [
+            Form.row(server, "Lewat server PasteLAN milik Anda (internet, HTTPS). Halaman web-nya bisa dipasang sebagai aplikasi di HP.", nil),
+            Form.row(lan, "Tanpa server: HP di Wi-Fi yang sama scan QR. Isi dienkripsi dengan kunci di QR.", nil),
+        ])
+
+        let dot = NSImageView(image: app.statusDot(connected))
+        let line = Form.label(connectionLine)
+        line.lineBreakMode = .byTruncatingTail
+        line.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        var rows: [NSView] = [Form.stack([dot, line], vertical: false, spacing: 8)]
+        if app.lanMode {
+            let copy = Form.button("Salin link", app, #selector(AppDelegate.copyLink))
+            copy.isEnabled = app.lan.shareURL != nil
+            rows.append(Form.row("Tambah HP", "Menu PasteLAN → \"Tambah HP (scan QR)\", lalu scan QR dengan kamera HP.", copy))
+            rows.append(Form.row("Reset link", "Kunci & link diganti: semua HP terputus dan harus scan QR baru.",
+                                 Form.button("Reset link…", app, #selector(AppDelegate.resetLink))))
+        } else if app.loggedIn, let url = app.serverURL {
+            rows.append(Form.row("Server", url.host ?? url.absoluteString, Form.button("Ganti server…", app, #selector(AppDelegate.setupServer))))
+            rows.append(Form.row("Tambah HP", "QR sekali pakai (5 menit): HP langsung masuk tanpa password.",
+                                 Form.button("Tampilkan QR…", app, #selector(AppDelegate.pairPhone))))
+            rows.append(Form.row("Halaman web PasteLAN", "Clipboard bersama di browser.",
+                                 Form.button("Buka di browser", app, #selector(AppDelegate.openWeb))))
+            rows.append(Form.row("Keluar dari server", "Token Mac ini dicabut di server.",
+                                 Form.button("Keluar…", app, #selector(AppDelegate.logoutServer))))
+        } else {
+            rows.append(Form.row("Belum login", "Tempel link setup dari halaman admin server, atau isi alamat server + password perangkat.",
+                                 Form.button("Atur server & login…", app, #selector(AppDelegate.setupServer))))
+        }
+        return [method, Form.section("Status", rows)]
+    }
+
+    private func aboutSections() -> [NSView] {
+        let icon = NSImageView(image: NSApp.applicationIconImage)
+        icon.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        let head = Form.stack([icon, Form.stack([Form.label("PasteLAN", size: 15, weight: .semibold),
+                                                 Form.note("Versi \(Updater.current) · copy-paste Mac ⇄ HP lewat server milik sendiri")],
+                                                spacing: 2)],
+                              vertical: false, spacing: 12)
+        let up = app.updater
+        let uninstall = Form.button("Uninstall…", app, #selector(AppDelegate.uninstall))
+        uninstall.hasDestructiveAction = true
+        return [
+            head,
+            Form.section("Pembaruan & bantuan", [
+                Form.row("Pembaruan", up.hasUpdate ? "Versi \(up.latest?.version ?? "") tersedia." : "Dicek otomatis sehari sekali.",
+                         Form.button(up.hasUpdate ? "Update…" : "Cek pembaruan…", up, #selector(Updater.checkNow))),
+                Form.row("Cara pakai", "Panduan singkat untuk Mac, HP, dan Wi-Fi lokal.",
+                         Form.button("Buka panduan…", app, #selector(AppDelegate.showHelp))),
+            ]),
+            Form.section("Hapus PasteLAN", [
+                Form.row("Uninstall PasteLAN", "Keluar dari server, hapus pengaturan, lalu pindahkan PasteLAN.app ke Tong Sampah.", uninstall),
+            ]),
+        ]
+    }
+
+    @objc func syncChanged(_ s: NSSwitch) { if (s.state == .on) != app.sharing { app.toggleSharing() } }
+    @objc func autoSendChanged(_ s: NSSwitch) { if (s.state == .on) != app.autoSend { app.toggleAutoSend() } }
+    @objc func saveImagesChanged(_ s: NSSwitch) { app.d.set(s.state == .on, forKey: "saveImages") }
+    @objc func loginChanged(_ s: NSSwitch) {
+        app.toggleLogin()
+        reload()
+    }
+    @objc func limitChanged(_ p: NSPopUpButton) {
+        app.setHistoryLimit(p.selectedTag())
+        reload()
+    }
+    @objc func useServer() { app.setMode("server") }
+    @objc func useLAN() { app.setMode("lan") }
 }
 
 // MARK: - Entry point

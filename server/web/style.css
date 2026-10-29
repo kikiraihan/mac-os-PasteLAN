@@ -48,3 +48,5 @@ input:disabled,select:disabled{opacity:.5}
 .bar h2{flex:1;margin:0}
 .bar button{padding:4px 10px;font-size:13px}
 .item .row button.del{flex:none}
+.search{margin:0 0 12px;-webkit-appearance:none;appearance:none;background:var(--card)}
+.item.hide{display:none}

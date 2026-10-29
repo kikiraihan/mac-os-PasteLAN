@@ -60,6 +60,15 @@
     if (s < 86400 * 30) return Math.round(s / 86400) + ' hari lalu';
     return new Date(ms).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
   }
+  // Jenis perangkat: aplikasi menu bar Mac, HP (halaman web / PWA di HP), browser di komputer
+  const KINDS = { mac: ['i-mac', 'Mac (menu bar)'], hp: ['i-phone', 'HP'], browser: ['i-globe', 'Browser'] };
+  function kindSummary(list) {
+    const n = { mac: 0, hp: 0, browser: 0, '': 0 };
+    for (const d of list) n[KINDS[d.kind] ? d.kind : '']++;
+    const parts = Object.keys(KINDS).filter(k => n[k]).map(k => n[k] + ' ' + KINDS[k][1].replace(' (menu bar)', ''));
+    if (n['']) parts.push(n[''] + ' belum diketahui');
+    return parts.join(' · ');
+  }
   function duration(min) {
     if (min % 1440 === 0) return (min / 1440) + ' hari';
     if (min % 60 === 0) return (min / 60) + ' jam';
@@ -161,7 +170,7 @@
     const max = j.maxDevices || 20;
     $('stDevices').textContent = num(j.devices.length);
     const recent = j.devices.filter(d => Date.now() - d.lastSeen < 86400000).length;
-    $('stDevicesSub').textContent = `${recent} aktif 24 jam terakhir · maks ${max}`;
+    $('stDevicesSub').textContent = (j.devices.length ? kindSummary(j.devices) + ' · ' : '') + `${recent} aktif 24 jam terakhir · maks ${max}`;
 
     $('stItems').textContent = num(j.items) + ' item';
     const pct = Math.min(100, (j.bytes / (s.maxTotalMB * 1048576)) * 100);
@@ -318,9 +327,14 @@
   // ---------- perangkat ----------
   function deviceRow(d, withRevoke) {
     const li = el('li');
-    li.append(el('span', 'av', (d.name.trim()[0] || '?').toUpperCase()));
+    const kind = KINDS[d.kind];
+    const av = el('span', 'av' + (kind ? ' k-' + d.kind : ''), kind ? null : (d.name.trim()[0] || '?').toUpperCase());
+    if (kind) { av.append(icon(kind[0])); av.title = kind[1]; }
+    li.append(av);
     const info = el('div', 'info');
-    info.append(el('div', 'name', d.name));
+    const name = el('div', 'name', d.name);
+    name.append(el('span', 'kind' + (kind ? ' k-' + d.kind : ''), kind ? kind[1] : 'Jenis belum diketahui'));
+    info.append(name);
     const sub = el('div', 'sub');
     if (Date.now() - d.lastSeen < 5 * 60000) sub.append(el('span', 'live'));
     sub.append('Aktif ' + ago(d.lastSeen) + ' · masuk ' + new Date(d.created).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }));
@@ -341,7 +355,7 @@
     const box = $('devices'), recent = $('recentDevices');
     box.textContent = '';
     recent.textContent = '';
-    $('devCount').textContent = list.length ? `${list.length} dari maks ${status.maxDevices || 20} perangkat.` : '';
+    $('devCount').textContent = list.length ? `${list.length} dari maks ${status.maxDevices || 20} perangkat: ${kindSummary(list)}.` : '';
     if (!list.length) {
       box.append(el('li', 'empty', 'Belum ada perangkat. Buat link setup di atas untuk menambah.'));
       recent.append(el('li', 'empty', 'Belum ada perangkat yang masuk.'));

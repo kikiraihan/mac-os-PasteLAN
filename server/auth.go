@@ -46,6 +46,7 @@ var hashSlots = make(chan struct{}, 2)
 type device struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
+	Kind      string    `json:"kind,omitempty"` // "mac" (aplikasi menu bar), "hp", "browser"; kosong = belum diketahui
 	TokenHash string    `json:"tokenHash"`
 	Created   time.Time `json:"created"`
 	LastSeen  time.Time `json:"lastSeen"`
@@ -122,6 +123,25 @@ func limitKey(ip string) string {
 	return ip
 }
 
+// clientKind: jenis perangkat. Klien baru menyebutnya sendiri ("mac" dari aplikasi menu bar, "hp" / "browser"
+// dari halaman web); klien lama ditebak dari User-Agent (aplikasi Mac = URLSession → "CFNetwork" tanpa "Mozilla").
+func clientKind(claimed, ua string) string {
+	switch claimed {
+	case "mac", "hp", "browser":
+		return claimed
+	}
+	switch {
+	case ua == "":
+		return ""
+	case strings.Contains(ua, "CFNetwork") && !strings.Contains(ua, "Mozilla"):
+		return "mac"
+	case strings.Contains(ua, "iPhone"), strings.Contains(ua, "iPad"), strings.Contains(ua, "Android"),
+		strings.Contains(ua, "Mobile"):
+		return "hp"
+	}
+	return "browser"
+}
+
 func cleanName(s string) string {
 	s = strings.TrimSpace(strings.Map(func(r rune) rune {
 		if r < 32 || r == 127 {
@@ -163,7 +183,7 @@ func (a *auth) passwordLoginAvailable() bool {
 }
 
 // login memeriksa password lalu membuat token baru untuk perangkat ini
-func (a *auth) login(ip, password, name string) (string, *device, error) {
+func (a *auth) login(ip, password, name, kind string) (string, *device, error) {
 	key := limitKey(ip)
 	if a.isLocked(key) {
 		return "", nil, errLocked
@@ -183,7 +203,7 @@ func (a *auth) login(ip, password, name string) (string, *device, error) {
 		return "", nil, errBadPassword
 	}
 	delete(a.fails, key)
-	return a.newDevice(name, now)
+	return a.newDevice(name, kind, now)
 }
 
 // adminEnabled: halaman admin aktif kalau ada PASTELAN_ADMIN_PASSWORD atau password admin dari halaman admin
@@ -318,7 +338,7 @@ func (a *auth) newPair(ttl time.Duration) (string, time.Time) {
 }
 
 // claimPair menukar kode pairing dengan token perangkat baru. Kode salah dihitung seperti password salah.
-func (a *auth) claimPair(ip, code, name string) (string, *device, error) {
+func (a *auth) claimPair(ip, code, name, kind string) (string, *device, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := time.Now()
@@ -335,7 +355,7 @@ func (a *auth) claimPair(ip, code, name string) (string, *device, error) {
 	}
 	delete(a.pairs, h) // sekali pakai
 	delete(a.fails, key)
-	return a.newDevice(name, now)
+	return a.newDevice(name, kind, now)
 }
 
 // locked: IP ini / semua login baru sedang dikunci (dipanggil dengan a.mu terkunci)
@@ -348,12 +368,12 @@ func (a *auth) locked(key string, now time.Time) bool {
 }
 
 // newDevice membuat token baru untuk perangkat (dipanggil dengan a.mu terkunci)
-func (a *auth) newDevice(name string, now time.Time) (string, *device, error) {
+func (a *auth) newDevice(name, kind string, now time.Time) (string, *device, error) {
 	if len(a.devices) >= maxDevices {
 		return "", nil, errTooMany
 	}
 	token := randomString(32)
-	d := &device{ID: randomString(9), Name: cleanName(name), TokenHash: hashToken(token), Created: now, LastSeen: now}
+	d := &device{ID: randomString(9), Name: cleanName(name), Kind: kind, TokenHash: hashToken(token), Created: now, LastSeen: now}
 	a.devices[d.TokenHash] = d
 	if err := a.save(); err != nil {
 		delete(a.devices, d.TokenHash)
@@ -392,8 +412,9 @@ func (a *auth) recordFail(key string, now time.Time) {
 	}
 }
 
-// check mengembalikan perangkat pemilik token, atau nil
-func (a *auth) check(token string) *device {
+// check mengembalikan perangkat pemilik token, atau nil. Perangkat lama (sebelum ada jenis perangkat) diberi jenis
+// dari request ini; tersimpan ke devices.json saat file itu ditulis berikutnya.
+func (a *auth) check(token, kind string) *device {
 	if token == "" {
 		return nil
 	}
@@ -404,6 +425,9 @@ func (a *auth) check(token string) *device {
 		return nil
 	}
 	d.LastSeen = time.Now()
+	if d.Kind == "" {
+		d.Kind = kind
+	}
 	cp := *d
 	return &cp
 }
