@@ -26,8 +26,12 @@ sebagai aplikasi. Opsi A tetap terdokumentasi di `../opsi-a-mac-app-plus-browser
 - [x] CI: tes Go + binary server Linux (amd64/arm64) ikut rilis; deploy systemd + Caddy
 - [x] v1.1.0: metode Wi-Fi lokal opsional (menu → Metode), kode v0.3.0 dipulihkan sebagai `LANServer`
 - [x] v1.1.0: "Tambah HP (scan QR)…" di Mac → HP masuk tanpa password (kode sekali pakai, 5 menit)
-- [x] v1.1.1: "Tambah HP (scan QR)" ke server lama → pesan jelas "perbarui server" (bukan HTTP 405);
+- [x] v1.2.0: "Tambah HP (scan QR)" ke server lama → pesan jelas "perbarui server" (bukan HTTP 405);
       `/api/` tak dikenal → 404 JSON; README server: bagian "Memperbarui server"
+- [x] v1.2.0: halaman admin `/admin` (`PASTELAN_ADMIN_PASSWORD`): link setup (Mac tempel link, tanpa password),
+      perangkat (cabut / cabut semua), password perangkat opsional (aktif / mati, hash PBKDF2), hapus otomatis &
+      lama simpan, batas item / memori, masa berlaku link; `deploy/pastelan.env.example` + `server/AGENTS.md`
+- [x] v1.2.0: web: hapus per item & "Hapus semua" (tersinkron ke semua perangkat lewat `ids` / `rev`)
 - [ ] Uji di Mac & HP nyata: login, install PWA, kirim dua arah, cabut perangkat
 - [ ] Uji metode Wi-Fi lokal di Mac nyata & ganti-ganti metode
 - [ ] Pasang server di VPS pemilik

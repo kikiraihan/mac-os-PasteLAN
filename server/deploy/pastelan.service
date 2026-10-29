@@ -1,5 +1,6 @@
 # systemd: /etc/systemd/system/pastelan.service
-# Password di /etc/pastelan.env (chmod 600), isinya:  PASTELAN_PASSWORD=...
+# Password di /etc/pastelan.env (chmod 600), contoh isinya: deploy/pastelan.env.example
+# (PASTELAN_ADMIN_PASSWORD wajib diganti dari contoh; PASTELAN_PASSWORD opsional)
 [Unit]
 Description=PasteLAN server
 After=network-online.target

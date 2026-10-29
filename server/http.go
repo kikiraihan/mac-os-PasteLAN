@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -17,32 +18,43 @@ import (
 const cookieName = "pl_token"
 
 type app struct {
-	auth  *auth
-	store *store
+	auth     *auth
+	store    *store
+	settings *settingsStore
 }
 
-func newApp(password, devicesFile string) (*app, error) {
-	a, err := newAuth(password, devicesFile)
+func newApp(password, adminPassword, dataDir string) (*app, error) {
+	st, err := loadSettings(filepath.Join(dataDir, "settings.json"), password != "")
 	if err != nil {
 		return nil, err
 	}
-	return &app{auth: a, store: newStore()}, nil
+	a, err := newAuth(password, adminPassword, filepath.Join(dataDir, "devices.json"), st)
+	if err != nil {
+		return nil, err
+	}
+	return &app{auth: a, store: newStore(st.get().limits()), settings: st}, nil
 }
 
 func (a *app) routes(web fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /", http.FileServerFS(web))
+	mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, web, "admin.html")
+	})
+	mux.HandleFunc("GET /api/config", a.publicConfig)
 	mux.HandleFunc("POST /api/login", a.login)
 	mux.HandleFunc("POST /api/logout", a.authed(a.logout))
 	mux.HandleFunc("POST /api/pair", a.authed(a.newPair))
 	mux.HandleFunc("POST /api/pair/claim", a.claimPair)
 	mux.HandleFunc("GET /api/items", a.authed(a.items))
 	mux.HandleFunc("DELETE /api/items", a.authed(a.clearItems))
+	mux.HandleFunc("DELETE /api/items/{id}", a.authed(a.deleteItem))
 	mux.HandleFunc("POST /api/text", a.authed(a.postText))
 	mux.HandleFunc("POST /api/image", a.authed(a.postImage))
 	mux.HandleFunc("GET /api/image/{id}", a.authed(a.getImage))
 	mux.HandleFunc("GET /api/devices", a.authed(a.devices))
 	mux.HandleFunc("DELETE /api/devices/{id}", a.authed(a.revokeDevice))
+	a.adminRoutes(mux)
 	// /api/ yang tidak dikenal → 404 JSON (bukan 405 dari "GET /"), supaya klien bisa memberi pesan yang jelas
 	for _, m := range []string{"GET", "POST", "PUT", "PATCH", "DELETE"} {
 		mux.HandleFunc(m+" /api/", func(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +168,7 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 
 // newPair: perangkat yang sudah login (Mac) meminta kode QR untuk menambah perangkat baru
 func (a *app) newPair(w http.ResponseWriter, r *http.Request, d *device) {
-	code, exp := a.auth.newPair()
+	code, exp := a.auth.newPair(pairTTL)
 	writeJSON(w, http.StatusOK, map[string]any{"code": code, "expires": exp.UnixMilli()})
 }
 
@@ -178,6 +190,8 @@ func (a *app) loginResult(w http.ResponseWriter, token string, d *device, err er
 		jsonError(w, http.StatusTooManyRequests, err.Error())
 	case errors.Is(err, errBadPassword), errors.Is(err, errBadPair):
 		jsonError(w, http.StatusUnauthorized, err.Error())
+	case errors.Is(err, errPwDisabled):
+		jsonError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, errTooMany):
 		jsonError(w, http.StatusConflict, err.Error())
 	case err != nil:
@@ -194,15 +208,36 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request, d *device) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// publicConfig: info untuk halaman login (tanpa rahasia) → form password disembunyikan kalau dimatikan admin
+func (a *app) publicConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"passwordLogin": a.auth.passwordLoginAvailable()})
+}
+
+// items: jawaban polling. ids = semua item yang masih ada (klien membuang yang sudah dihapus / kedaluwarsa),
+// rev = penanda penghapusan (klien mengirimnya balik sebagai r=), max = batas jumlah item.
 func (a *app) items(w http.ResponseWriter, r *http.Request, d *device) {
 	q := r.URL.Query()
 	after, _ := strconv.ParseInt(q.Get("after"), 10, 64)
-	session, list := a.store.poll(r.Context(), q.Get("s"), after, q.Get("wait") == "1")
-	writeJSON(w, http.StatusOK, map[string]any{"session": session, "you": d.ID, "items": list})
+	rev := int64(-1)
+	if v, err := strconv.ParseInt(q.Get("r"), 10, 64); err == nil {
+		rev = v
+	}
+	snap := a.store.poll(r.Context(), q.Get("s"), after, rev, q.Get("wait") == "1")
+	writeJSON(w, http.StatusOK, map[string]any{"session": snap.session, "you": d.ID, "items": snap.items,
+		"ids": snap.ids, "rev": snap.rev, "max": a.settings.get().MaxItems})
 }
 
 func (a *app) clearItems(w http.ResponseWriter, r *http.Request, d *device) {
 	a.store.clear()
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *app) deleteItem(w http.ResponseWriter, r *http.Request, d *device) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if !a.store.remove(id) {
+		jsonError(w, http.StatusNotFound, "item tidak ada lagi di riwayat")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

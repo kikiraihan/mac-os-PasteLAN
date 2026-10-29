@@ -8,15 +8,21 @@ import (
 )
 
 const (
-	maxItems     = 20
-	maxTotal     = 150 << 20 // total isi semua item di memori
-	maxText      = 2 << 20
-	maxImage     = 30 << 20
-	itemTTL      = 24 * time.Hour
-	pollDuration = 25 * time.Second
+	defaultMaxItems   = 20
+	defaultMaxTotalMB = 150 // total isi semua item di memori
+	maxText           = 2 << 20
+	maxImage          = 30 << 20
+	pollDuration      = 25 * time.Second
 )
 
-// item = satu isi clipboard. Hanya di memori; hilang saat server restart atau setelah itemTTL.
+// limits = batas riwayat (diatur dari halaman admin, lihat settings.go)
+type limits struct {
+	maxItems int
+	maxTotal int           // byte
+	ttl      time.Duration // 0 = tidak dihapus otomatis berdasarkan umur
+}
+
+// item = satu isi clipboard. Hanya di memori; hilang saat server restart, dihapus, atau kedaluwarsa (limits.ttl).
 type item struct {
 	ID     int64  `json:"id"`
 	Kind   string `json:"kind"` // "text" / "image"
@@ -35,19 +41,33 @@ type store struct {
 	items   []*item // terlama di depan
 	nextID  int64
 	session string        // berubah saat server restart / riwayat dihapus → klien mengosongkan daftarnya
+	rev     int64         // naik setiap ada item yang hilang (dihapus / kedaluwarsa) → klien menyesuaikan daftarnya
 	changed chan struct{} // ditutup setiap ada perubahan → membangunkan semua long-poll
+	lim     limits
 }
 
-func newStore() *store {
-	s := &store{nextID: 1, session: randomString(8), changed: make(chan struct{})}
+func newStore(l limits) *store {
+	s := &store{nextID: 1, session: randomString(8), changed: make(chan struct{}), lim: l}
 	go func() { // buang item kedaluwarsa walau tidak ada yang mengakses
-		for range time.Tick(10 * time.Minute) {
+		for range time.Tick(time.Minute) {
 			s.mu.Lock()
-			s.prune(time.Now())
+			if s.prune(time.Now()) {
+				s.notify()
+			}
 			s.mu.Unlock()
 		}
 	}()
 	return s
+}
+
+// setLimits dipanggil saat admin mengubah pengaturan; item yang melebihi batas baru langsung dibuang
+func (s *store) setLimits(l limits) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lim = l
+	if s.prune(time.Now()) {
+		s.notify()
+	}
 }
 
 func (s *store) notify() {
@@ -55,17 +75,24 @@ func (s *store) notify() {
 	s.changed = make(chan struct{})
 }
 
-// prune membuang item yang kedaluwarsa / melebihi batas (dipanggil dengan s.mu terkunci)
-func (s *store) prune(now time.Time) {
+// prune membuang item yang kedaluwarsa / melebihi batas (dipanggil dengan s.mu terkunci). true = ada yang dibuang.
+func (s *store) prune(now time.Time) bool {
 	total := 0
 	for _, it := range s.items {
 		total += it.Size
 	}
-	for len(s.items) > 0 && (len(s.items) > maxItems || total > maxTotal || now.Sub(s.items[0].at) > itemTTL) {
+	removed := false
+	for len(s.items) > 0 && (len(s.items) > s.lim.maxItems || total > s.lim.maxTotal ||
+		(s.lim.ttl > 0 && now.Sub(s.items[0].at) > s.lim.ttl)) {
 		total -= s.items[0].Size
 		s.items[0] = nil
 		s.items = s.items[1:]
+		removed = true
 	}
+	if removed {
+		s.rev++
+	}
+	return removed
 }
 
 func (s *store) add(it *item) item {
@@ -87,23 +114,32 @@ func (s *store) add(it *item) item {
 	return *it
 }
 
-// after: item dengan id > after (tanpa isi gambar)
-func (s *store) after(after int64) (string, []item) {
+// snapshot = jawaban polling: item dengan id > after (tanpa isi gambar) + id semua item yang masih ada
+type snapshot struct {
+	session string
+	rev     int64
+	items   []item
+	ids     []int64
+}
+
+func (s *store) after(after int64) snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prune(time.Now())
-	out := []item{}
+	out := snapshot{session: s.session, rev: s.rev, items: []item{}, ids: []int64{}}
 	for _, it := range s.items {
+		out.ids = append(out.ids, it.ID)
 		if it.ID > after {
-			out = append(out, *it)
+			out.items = append(out.items, *it)
 		}
 	}
-	return s.session, out
+	return out
 }
 
 // poll: item baru untuk klien. Session klien beda (klien baru / server restart / riwayat dihapus) → semua item.
-// wait → tahan sampai ada item baru atau pollDuration habis (long-poll).
-func (s *store) poll(ctx context.Context, clientSession string, after int64, wait bool) (string, []item) {
+// wait → tahan sampai ada item baru, ada item yang hilang (rev ≠ clientRev), atau pollDuration habis (long-poll).
+// clientRev < 0 = klien lama yang belum mengenal rev (hanya ditunggu sampai ada item baru).
+func (s *store) poll(ctx context.Context, clientSession string, after, clientRev int64, wait bool) snapshot {
 	s.mu.Lock()
 	session := s.session
 	s.mu.Unlock()
@@ -111,23 +147,24 @@ func (s *store) poll(ctx context.Context, clientSession string, after int64, wai
 		return s.after(0)
 	}
 	if wait {
-		s.wait(ctx, session, after)
+		s.wait(ctx, session, after, clientRev)
 	}
-	cur, list := s.after(after)
-	if cur != session { // riwayat dihapus saat menunggu
+	snap := s.after(after)
+	if snap.session != session { // riwayat dihapus saat menunggu
 		return s.after(0)
 	}
-	return cur, list
+	return snap
 }
 
-// wait menunggu sampai ada item baru (id > after) atau session berubah, maksimal pollDuration
-func (s *store) wait(ctx context.Context, session string, after int64) {
+// wait menunggu sampai ada item baru (id > after), item hilang, atau session berubah, maksimal pollDuration
+func (s *store) wait(ctx context.Context, session string, after, clientRev int64) {
 	timer := time.NewTimer(pollDuration)
 	defer timer.Stop()
 	for {
 		s.mu.Lock()
 		ch := s.changed
-		ready := s.session != session || (len(s.items) > 0 && s.items[len(s.items)-1].ID > after)
+		ready := s.session != session || (len(s.items) > 0 && s.items[len(s.items)-1].ID > after) ||
+			(clientRev >= 0 && s.rev != clientRev)
 		s.mu.Unlock()
 		if ready {
 			return
@@ -155,10 +192,36 @@ func (s *store) image(id int64) *item {
 	return nil
 }
 
+// remove menghapus satu item (semua perangkat ikut menghapusnya lewat ids di jawaban polling)
+func (s *store) remove(id int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, it := range s.items {
+		if it.ID == id {
+			s.items = append(s.items[:i:i], s.items[i+1:]...)
+			s.rev++
+			s.notify()
+			return true
+		}
+	}
+	return false
+}
+
 func (s *store) clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.items = nil
 	s.session = randomString(8)
 	s.notify()
+}
+
+// stats untuk halaman admin
+func (s *store) stats() (count, bytes int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prune(time.Now())
+	for _, it := range s.items {
+		bytes += it.Size
+	}
+	return len(s.items), bytes
 }

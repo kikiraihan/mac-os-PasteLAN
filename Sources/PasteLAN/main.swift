@@ -277,6 +277,7 @@ final class PasteServer {
     private let http: URLSession
     private var session = ""   // id session server: berubah saat server restart / riwayat dihapus
     private var after = 0
+    private var rev = -1       // penanda penghapusan item di server (-1 = belum tahu)
     private var primed = false // item yang sudah ada sebelum tersambung tidak ditempel ke clipboard
     private var gen = 0        // naik setiap start/stop → jawaban polling lama diabaikan
     private var retry: TimeInterval = 2
@@ -343,6 +344,32 @@ final class PasteServer {
         }
     }
 
+    /// Link setup / QR (https://server/#pair=<kode>) → alamat server + kode sekali pakai. nil kalau bukan link setup.
+    static func setupLink(_ s: String) -> (base: URL, code: String)? {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let r = t.range(of: "#pair=") else { return nil }
+        let code = String(t[r.upperBound...])
+        var host = String(t[..<r.lowerBound])
+        while host.hasSuffix("/") { host.removeLast() }
+        guard !code.isEmpty, code.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }),
+              let base = normalize(host) else { return nil }
+        return (base, code)
+    }
+
+    /// Masuk dengan kode dari link setup (tanpa password) → token baru untuk perangkat ini
+    func claim(base: URL, code: String, name: String, _ done: @escaping (String?, String?) -> Void) {
+        stop()
+        self.base = base
+        token = nil
+        let body = try? JSONSerialization.data(withJSONObject: ["code": code, "name": name])
+        send(request("POST", "/api/pair/claim", body: body, type: "application/json")) { status, data, err in
+            guard status == 200, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let t = j["token"] as? String else { return done(nil, PasteServer.errorText(data, status, err)) }
+            self.token = t
+            done(t, nil)
+        }
+    }
+
     /// Cabut token Mac ini di server (perangkat hilang dari daftar), lalu lupakan token
     func logout(_ done: @escaping () -> Void) {
         let r = request("POST", "/api/logout")
@@ -356,6 +383,7 @@ final class PasteServer {
         items = []
         session = ""
         after = 0
+        rev = -1
         state = .loggedOut
         onChange?()
     }
@@ -386,7 +414,7 @@ final class PasteServer {
     private func poll(_ g: Int) {
         guard g == gen else { return }
         let s = session.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
-        send(request("GET", "/api/items?after=\(after)&s=\(s)&wait=1")) { status, data, err in
+        send(request("GET", "/api/items?after=\(after)&s=\(s)&r=\(rev)&wait=1")) { status, data, err in
             guard g == self.gen else { return }
             switch status {
             case 200:
@@ -405,7 +433,8 @@ final class PasteServer {
     }
 
     private func receive(_ data: Data) {
-        struct Reply: Decodable { let session: String; let you: String; let items: [Clip] }
+        // ids / rev: server ≥ 1.2.0 (item yang dihapus / kedaluwarsa ikut hilang dari riwayat Mac)
+        struct Reply: Decodable { let session: String; let you: String; let items: [Clip]; let ids: [Int]?; let rev: Int? }
         guard let r = try? JSONDecoder().decode(Reply.self, from: data) else { return }
         me = r.you
         if r.session != session {
@@ -418,6 +447,11 @@ final class PasteServer {
             after = c.id
             if primed, c.device != me { onIncoming?(c) }
         }
+        if let ids = r.ids {
+            let keep = Set(ids)
+            items.removeAll { !keep.contains($0.id) }
+        }
+        rev = r.rev ?? -1
         primed = true
         if items.count > 20 { items.removeFirst(items.count - 20) }
         state = .connected
@@ -1826,17 +1860,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: server & login
 
-    /// Minta alamat server + password, lalu login (password tidak disimpan; token disimpan di Keychain)
+    /// Minta link setup (dari halaman admin), atau alamat server + password, lalu login
+    /// (link / password tidak disimpan; token disimpan di Keychain)
     @objc func setupServer() {
         let a = NSAlert()
         a.messageText = "Server PasteLAN"
-        a.informativeText = "Masukkan alamat server PasteLAN Anda dan password-nya. Password hanya dipakai sekali " +
-            "untuk login; Mac ini lalu menyimpan token perangkat di Keychain."
+        a.informativeText = "Tempel link setup dari halaman admin server (https://server/admin → \"Buat link setup\"), " +
+            "password tidak perlu diisi.\n\nAtau isi alamat server dan password perangkat. Mac ini lalu menyimpan " +
+            "token perangkat di Keychain."
         let urlField = NSTextField(frame: NSRect(x: 0, y: 32, width: 300, height: 24))
-        urlField.placeholderString = "pastelan.example.com"
+        urlField.placeholderString = "Link setup atau pastelan.example.com"
         urlField.stringValue = d.string(forKey: "serverURL") ?? ""
         let pwField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-        pwField.placeholderString = "Password server"
+        pwField.placeholderString = "Password (kosongkan kalau pakai link setup)"
         let box = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 56))
         box.addSubview(urlField)
         box.addSubview(pwField)
@@ -1849,18 +1885,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let choice = a.runModal()
         if choice == .alertThirdButtonReturn { return setMode("lan") }
         guard choice == .alertFirstButtonReturn else { return }
-        guard let url = PasteServer.normalize(urlField.stringValue) else {
+        let link = PasteServer.setupLink(urlField.stringValue)
+        if link == nil, urlField.stringValue.contains("#pair=") {
+            return showError("Link setup tidak valid", "Salin ulang link setup dari halaman admin server PasteLAN.")
+        }
+        guard let url = link?.base ?? PasteServer.normalize(urlField.stringValue) else {
             return showError("Alamat server tidak valid", "Pakai alamat HTTPS server PasteLAN, mis. pastelan.example.com.")
         }
         let password = pwField.stringValue
         let doLogin = { [weak self] in
             guard let self else { return }
-            self.server.login(base: url, password: password, name: self.macName) { token, err in
+            let done: (String?, String?) -> Void = { token, err in
                 guard let token else { return self.showError("Login gagal", err ?? "Tidak diketahui") }
                 Keychain.token = token
                 self.d.set(url.absoluteString, forKey: "serverURL")
                 self.d.set("server", forKey: "mode")
                 self.applySharing()
+            }
+            if let link {
+                self.server.claim(base: link.base, code: link.code, name: self.macName, done)
+            } else {
+                self.server.login(base: url, password: password, name: self.macName, done)
             }
         }
         // ganti server / login ulang → token lama dicabut dulu di server lama
@@ -1888,7 +1933,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func logoutServer() {
         let a = NSAlert()
         a.messageText = "Keluar dari server PasteLAN?"
-        a.informativeText = "Token Mac ini dicabut di server. Untuk tersambung lagi perlu password server."
+        a.informativeText = "Token Mac ini dicabut di server. Untuk tersambung lagi perlu link setup (dari halaman admin) " +
+            "atau password perangkat."
         a.addButton(withTitle: "Keluar")
         a.addButton(withTitle: "Batal")
         NSApp.activate(ignoringOtherApps: true)
@@ -2195,7 +2241,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         PasteLAN memindahkan teks & gambar antara Mac dan HP lewat server PasteLAN milik Anda sendiri (HTTPS). \
         Mac dan HP tidak perlu di Wi-Fi yang sama.
 
-        1. Klik ikon ⇄ di menu bar → "Atur server & login…", isi alamat server dan password-nya.
+        1. Buka https://server-anda/admin → "Buat link setup", lalu di Mac klik ikon ⇄ di menu bar → \
+        "Atur server & login…" dan tempel link itu (atau isi alamat server + password perangkat).
         2. Menu → "Tambah HP (scan QR)…", scan dengan kamera HP (HP langsung masuk tanpa password), lalu pilih \
         "Install" / "Tambahkan ke Layar Utama" supaya PasteLAN jadi aplikasi di HP. \
         Bisa juga: buka alamat server di HP dan masuk dengan password.

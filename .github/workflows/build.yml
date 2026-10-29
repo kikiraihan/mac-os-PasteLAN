@@ -39,13 +39,15 @@ jobs:
 
       - name: Tes & build server
         working-directory: server
+        env:
+          VERSION: ${{ steps.ver.outputs.tag }}
         run: |
           test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::jalankan gofmt -w ."; exit 1; }
           go vet ./...
           go test -race -count=1 ./...
           mkdir -p ../dist
           for arch in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w" -o ../dist/pastelan-server-linux-$arch .
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o ../dist/pastelan-server-linux-$arch .
           done
 
       - name: Build PasteLAN.app (universal)

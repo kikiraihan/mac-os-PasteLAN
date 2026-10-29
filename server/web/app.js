@@ -2,8 +2,9 @@
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
-  const MAX_ITEMS = 20, MAX_BYTES = 30 * 1024 * 1024;
-  let after = 0, session = '', me = '', polling = false, ctrl = null;
+  const MAX_BYTES = 30 * 1024 * 1024;
+  let maxItems = 20; // dari server (diatur di halaman admin)
+  let after = 0, session = '', rev = -1, me = '', polling = false, ctrl = null;
 
   function toast(msg) {
     const t = $('toast');
@@ -57,6 +58,14 @@
     setStatus('off', 'Belum masuk');
     $('devname').value = localStorage.getItem('pastelan-name') || guessName();
     $('password').focus();
+    // login dengan password bisa dimatikan admin → hanya link setup / QR
+    api('/api/config').then(c => {
+      $('pwLabel').hidden = $('loginBtn').hidden = !c.passwordLogin;
+      $('password').required = c.passwordLogin;
+      $('loginHint').textContent = c.passwordLogin
+        ? 'Masukkan password server PasteLAN (cukup sekali per perangkat), atau scan QR "Tambah HP" dari menu PasteLAN di Mac.'
+        : 'Masuk dengan scan QR "Tambah HP" dari menu PasteLAN di Mac, atau buka link setup dari halaman admin.';
+    }).catch(() => {});
   }
   function showApp() {
     $('login').hidden = true;
@@ -89,6 +98,15 @@
     $('list').textContent = '';
     after = 0;
   }
+  function removeCard(card) {
+    if (card.blobURL) URL.revokeObjectURL(card.blobURL);
+    card.remove();
+  }
+  // buang kartu yang sudah tidak ada di server (dihapus perangkat lain / kedaluwarsa)
+  function syncIds(ids) {
+    const keep = new Set(ids);
+    for (const c of [...$('list').children]) if (c.itemId && !keep.has(c.itemId)) removeCard(c);
+  }
   function showEmpty() {
     if (!$('list').children.length) $('list').append(el('div', 'empty', 'Belum ada apa-apa. Copy sesuatu di Mac (⌘C), atau kirim dari sini.'));
   }
@@ -98,11 +116,14 @@
       ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 35000);
       try {
-        const j = await api(`/api/items?after=${after}&s=${encodeURIComponent(session)}&wait=1`, { signal: ctrl.signal });
+        const j = await api(`/api/items?after=${after}&s=${encodeURIComponent(session)}&r=${rev}&wait=1`, { signal: ctrl.signal });
         me = j.you;
+        if (j.max) maxItems = j.max;
         if (j.session !== session) { session = j.session; clearList(); }
+        rev = j.rev == null ? -1 : j.rev;
         setStatus('on', 'Terhubung');
         for (const it of j.items) { add(it); after = Math.max(after, it.id); }
+        if (j.ids) syncIds(j.ids);
         showEmpty();
       } catch (e) {
         if (!polling) return;
@@ -118,6 +139,7 @@
     const empty = list.querySelector('.empty');
     if (empty) empty.remove();
     const card = el('div', 'card item');
+    card.itemId = it.id;
     const meta = el('div', 'meta');
     const time = new Date(it.time).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
     meta.append(el('span', '', it.device === me ? 'Dari perangkat ini' : 'Dari ' + it.from), el('span', '', time));
@@ -153,12 +175,18 @@
           copy.disabled = false;
         }).catch(() => { img.alt = 'Gambar gagal dimuat'; });
     }
+    // hapus item ini dari server → hilang juga di semua perangkat
+    row.append(button('Hapus', 'ghost danger del', async b => {
+      b.disabled = true;
+      try {
+        await api('/api/items/' + it.id, { method: 'DELETE' });
+        removeCard(card);
+        showEmpty();
+      } catch (e) { b.disabled = false; toast(e.message); }
+    }));
     card.append(row);
     list.prepend(card);
-    while (list.children.length > MAX_ITEMS) {
-      if (list.lastChild.blobURL) URL.revokeObjectURL(list.lastChild.blobURL);
-      list.lastChild.remove();
-    }
+    while (list.children.length > maxItems) removeCard(list.lastChild);
   }
 
   async function copyText(text) {
@@ -239,7 +267,7 @@
         row.append(info);
         if (!d.current) {
           row.append(button('Cabut', 'ghost danger', async () => {
-            if (!confirm(`Cabut akses "${d.name}"? Perangkat itu harus login ulang dengan password.`)) return;
+            if (!confirm(`Cabut akses "${d.name}"? Perangkat itu harus masuk lagi (link setup / QR / password).`)) return;
             try { await api('/api/devices/' + encodeURIComponent(d.id), { method: 'DELETE' }); loadDevices(); }
             catch (e) { toast(e.message); }
           }));
@@ -254,12 +282,12 @@
     try { await api('/api/items', { method: 'DELETE' }); toast('Riwayat dihapus'); } catch (e) { toast(e.message); }
   };
   $('logout').onclick = async () => {
-    if (!confirm('Keluar dari perangkat ini? Perlu password untuk masuk lagi.')) return;
+    if (!confirm('Keluar dari perangkat ini? Perlu link setup / QR / password untuk masuk lagi.')) return;
     try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
     showLogin();
   };
 
-  // QR dari menu Mac: https://server/#pair=<kode> → masuk tanpa mengetik password (kode sekali pakai, 5 menit)
+  // QR dari menu Mac / link setup dari admin: https://server/#pair=<kode> → masuk tanpa mengetik password (sekali pakai)
   async function claimFromQR() {
     const code = new URLSearchParams(location.hash.slice(1)).get('pair');
     if (!code) return true;

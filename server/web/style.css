@@ -38,3 +38,13 @@ summary{cursor:pointer;font-weight:600}
 .dev button{padding:6px 10px;font-size:13px}
 #toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);background:rgba(0,0,0,.85);color:#fff;padding:8px 14px;border-radius:20px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90%;text-align:center}
 #toast.show{opacity:1}
+.check{display:flex;align-items:center;gap:8px;color:var(--text)}
+.check input{width:auto;margin:0}
+.row.inline{margin-top:4px;flex-wrap:nowrap}
+.row.inline input{flex:1}
+select{border:1px solid var(--line);border-radius:10px;padding:10px;font:inherit;background:transparent;color:var(--text)}
+input:disabled,select:disabled{opacity:.5}
+.bar{display:flex;align-items:center;gap:8px;margin:20px 4px 8px}
+.bar h2{flex:1;margin:0}
+.bar button{padding:4px 10px;font-size:13px}
+.item .row button.del{flex:none}
