@@ -1,0 +1,134 @@
+name: Deploy server ke VPS
+
+# push ke main yang mengubah server/ → cek (server-ci.yml) → upload binary ke VPS → deploy.sh di VPS
+# (backup data, ganti binary, restart systemd, health check, rollback otomatis kalau gagal).
+# Panduan setup: server/CICD.md
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - ".github/workflows/deploy-server.yml"
+      - ".github/workflows/server-ci.yml"
+  workflow_dispatch:
+    inputs:
+      skip_backup:
+        description: "Lewati backup data (devices.json / settings.json) sebelum deploy"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Cegah dua deploy PasteLAN jalan bersamaan di VPS yang sama
+concurrency:
+  group: deploy-pastelan-production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/server-ci.yml
+
+  deploy:
+    name: SSH deploy
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+      SKIP_BACKUP: ${{ inputs.skip_backup && '1' || '0' }}
+      VERSION: ${{ needs.ci.outputs.version }}
+    steps:
+      # Secret belum diisi → push biasa tidak dibuat merah (deploy dilewati); Run workflow manual tetap gagal
+      - name: Cek secret
+        id: check
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          if [ -n "$SSH_HOST" ] && [ -n "$SSH_USER" ] && [ -n "$SSH_PRIVATE_KEY" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          msg="Secret SSH_HOST / SSH_USER / SSH_PRIVATE_KEY belum diisi, deploy dilewati (lihat server/CICD.md)."
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "::error::$msg"; exit 1
+          fi
+          echo "::warning::$msg"
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.ready == 'true'
+        with:
+          sparse-checkout: server/deploy
+
+      - uses: actions/download-artifact@v4
+        if: steps.check.outputs.ready == 'true'
+        with:
+          name: pastelan-server
+          path: dist
+
+      - name: Siapkan kunci SSH
+        if: steps.check.outputs.ready == 'true'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          if [ -n "$SSH_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            echo "::warning::Secret SSH_KNOWN_HOSTS kosong; host key diambil lewat ssh-keyscan (tanpa verifikasi)."
+            ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CFG
+          Host vps
+            HostName $SSH_HOST
+            User $SSH_USER
+            Port $SSH_PORT
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            BatchMode yes
+            ConnectTimeout 15
+            ServerAliveInterval 30
+          CFG
+          chmod 600 ~/.ssh/config
+
+      # binary sesuai arsitektur VPS + script deploy dikirim ke folder sementara, lalu deploy.sh dijalankan
+      # (lewat sudo -n kalau SSH_USER bukan root). VPS tidak butuh git / Go.
+      - name: Jalankan deploy di VPS
+        if: steps.check.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          case "$(ssh vps uname -m)" in
+            x86_64|amd64) arch=amd64 ;;
+            aarch64|arm64) arch=arm64 ;;
+            *) echo "::error::Arsitektur VPS tidak didukung: $(ssh vps uname -m)"; exit 1 ;;
+          esac
+          dir=$(ssh vps 'mktemp -d /tmp/pastelan-deploy.XXXXXX')
+          scp -q "dist/pastelan-server-linux-$arch" vps:"$dir/pastelan-server"
+          scp -q server/deploy/deploy.sh server/deploy/rollback.sh vps:"$dir/"
+          ssh vps "sudo_=; [ \"\$(id -u)\" = 0 ] || sudo_='sudo -n'; \
+            \$sudo_ env SKIP_BACKUP='$SKIP_BACKUP' EXPECT_VERSION='$VERSION' bash '$dir/deploy.sh' '$dir/pastelan-server'; \
+            rc=\$?; rm -rf '$dir'; exit \$rc"
+
+      - name: Ringkasan
+        if: always() && steps.check.outputs.ready == 'true'
+        run: |
+          {
+            echo "### Deploy server ${{ job.status }}"
+            echo ""
+            echo "- Versi: \`$VERSION\`"
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- Server: \`$SSH_USER@$SSH_HOST\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Bersihkan kunci SSH
+        if: always()
+        run: rm -f ~/.ssh/id_deploy

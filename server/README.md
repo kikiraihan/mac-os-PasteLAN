@@ -57,8 +57,11 @@ Memakai Nginx? Teruskan ke `127.0.0.1:8080` dengan `proxy_set_header X-Forwarded
 
 ## Memperbarui server
 
-Binary server **tidak** ikut auto-update aplikasi Mac. Setelah rilis baru, perbarui juga di VPS (fitur baru seperti
-"Tambah HP (scan QR)" butuh server versi yang sama; server lama menjawab 405 / 404):
+**Otomatis (disarankan)**: CI/CD men-deploy server setiap ada perubahan `server/` di `main` (backup data, health
+check, rollback otomatis). Setup sekali: [CICD.md](CICD.md). Dari laptop: `deploy/deploy-remote.sh root@IP-VPS`.
+
+**Manual**: binary server **tidak** ikut auto-update aplikasi Mac. Setelah rilis baru, perbarui juga di VPS (fitur
+baru seperti "Tambah HP (scan QR)" butuh server versi yang sama; server lama menjawab 405 / 404):
 
 ```bash
 # unduh pastelan-server-linux-amd64 (atau -arm64) dari Releases versi terbaru, lalu

@@ -118,8 +118,10 @@ sudo cp server/deploy/pastelan.service /etc/systemd/system/ && sudo systemctl en
 # HTTPS: pasang Caddy, salin server/deploy/Caddyfile (ganti domain), lalu: sudo systemctl reload caddy
 ```
 
-Lalu buka `https://domain-anda/admin` → **Buat link setup** → tempel di Mac. Server **tidak** ikut update otomatis:
-setelah rilis baru, perbarui binary-nya juga (lihat `server/README.md` → *Memperbarui server*).
+Lalu buka `https://domain-anda/admin` → **Buat link setup** → tempel di Mac. Server **tidak** ikut update otomatis
+aplikasi Mac: pasang **CI/CD** sekali ([`server/CICD.md`](server/CICD.md)) supaya setiap perubahan `server/` di
+`main` langsung di-deploy ke VPS (backup, health check, rollback otomatis), atau perbarui manual
+(`server/README.md` → *Memperbarui server*).
 
 ## Instal aplikasi Mac
 
