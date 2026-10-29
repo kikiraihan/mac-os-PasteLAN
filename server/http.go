@@ -43,6 +43,12 @@ func (a *app) routes(web fs.FS) http.Handler {
 	mux.HandleFunc("GET /api/image/{id}", a.authed(a.getImage))
 	mux.HandleFunc("GET /api/devices", a.authed(a.devices))
 	mux.HandleFunc("DELETE /api/devices/{id}", a.authed(a.revokeDevice))
+	// /api/ yang tidak dikenal → 404 JSON (bukan 405 dari "GET /"), supaya klien bisa memberi pesan yang jelas
+	for _, m := range []string{"GET", "POST", "PUT", "PATCH", "DELETE"} {
+		mux.HandleFunc(m+" /api/", func(w http.ResponseWriter, r *http.Request) {
+			jsonError(w, http.StatusNotFound, "endpoint tidak dikenal (server PasteLAN mungkin versi lama / berbeda)")
+		})
+	}
 	return secure(mux)
 }
 

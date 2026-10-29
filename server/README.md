@@ -38,6 +38,20 @@ DNS domain/subdomain harus mengarah ke VPS, dan port 80 + 443 terbuka (untuk Let
 Memakai Nginx? Teruskan ke `127.0.0.1:8080` dengan `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`,
 `proxy_set_header X-Forwarded-Proto $scheme;`, `client_max_body_size 32m;` dan `proxy_read_timeout 60s;`.
 
+## Memperbarui server
+
+Binary server **tidak** ikut auto-update aplikasi Mac. Setelah rilis baru, perbarui juga di VPS (fitur baru seperti
+"Tambah HP (scan QR)" butuh server versi yang sama; server lama menjawab 405 / 404):
+
+```bash
+# unduh pastelan-server-linux-amd64 (atau -arm64) dari Releases versi terbaru, lalu
+sudo install -m 755 pastelan-server-linux-amd64 /usr/local/bin/pastelan-server
+sudo systemctl restart pastelan
+```
+
+Perangkat yang sudah login tetap login (token disimpan di `/var/lib/pastelan`); riwayat clipboard (hanya di memori)
+hilang saat restart.
+
 ## API (ringkas)
 
 Semua request `/api/` wajib header `X-PasteLAN: 1`. Login: cookie `pl_token` (browser) atau

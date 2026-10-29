@@ -439,6 +439,13 @@ final class PasteServer {
     func pairLink(_ done: @escaping (URL?, Date?, String?) -> Void) {
         send(request("POST", "/api/pair")) { status, data, err in
             if status == 401 { self.unauthorized() }
+            // server lama (< 1.1.0) belum punya /api/pair: v1.0.0 menjawab 405, versi baru 404
+            if status == 404 || status == 405 {
+                let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "terbaru" // tanpa Updater: bagian ini hanya Foundation
+                return done(nil, nil, "Server PasteLAN di VPS masih versi lama dan belum mendukung QR (HTTP \(status)). " +
+                    "Perbarui pastelan-server ke versi \(v) atau lebih baru (README server, " +
+                    "bagian \"Memperbarui server\"), atau tambah HP dengan password dulu.")
+            }
             guard status == 200, let base = self.base,
                   let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let code = j["code"] as? String, let exp = (j["expires"] as? NSNumber)?.doubleValue,

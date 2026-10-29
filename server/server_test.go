@@ -318,6 +318,19 @@ func claim(t *testing.T, ts *httptest.Server, code, name string) (int, string, *
 	return res.StatusCode, j.Token, res
 }
 
+func TestUnknownAPI(t *testing.T) {
+	ts, _ := newTestServer(t)
+	for _, m := range []string{"GET", "POST", "DELETE"} {
+		res, b := do(t, ts, m, "/api/tidak-ada", "", nil, nil)
+		if res.StatusCode != 404 || !strings.Contains(string(b), `"error"`) {
+			t.Fatalf("%s /api/ tidak dikenal: %d %s", m, res.StatusCode, b)
+		}
+	}
+	if res, _ := do(t, ts, "GET", "/", "", nil, nil); res.StatusCode != 200 {
+		t.Fatalf("halaman utama: %d", res.StatusCode)
+	}
+}
+
 func TestPairing(t *testing.T) {
 	ts, _ := newTestServer(t)
 	if res, _ := do(t, ts, "POST", "/api/pair", "", nil, nil); res.StatusCode != 401 {
