@@ -1789,7 +1789,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func updateIcon() {
         guard let b = item.button else { return }
-        if flashTimer == nil { b.image = symbol("arrow.left.arrow.right.circle") }
+        if flashTimer == nil { b.image = symbol("paperclip") }
         b.appearsDisabled = !sharing || (lanMode ? !lan.running : server.state != .connected)
     }
 
