@@ -2086,10 +2086,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         push(history.add(c, from: "", synced: false))
     }
 
+    /// Bisa mengirim satu clip dari menu (⇧ + klik)? Mode server cukup sudah login: saat sinkron mati clip dikirim
+    /// sekali saja (tanpa menyalakan sinkron). Wi-Fi lokal butuh sinkron aktif karena server kecil di Mac mati saat sinkron mati.
+    var canSendOne: Bool { lanMode ? syncActive : loggedIn }
+
     /// Kirim clip dari riwayat Mac ke server / HP. false kalau tidak bisa (sinkron mati, atau gambar tanpa isi).
+    /// `once`: kiriman manual satu clip, boleh juga saat sinkron mati (lihat canSendOne).
     @discardableResult
-    func push(_ c: LocalClip) -> Bool {
-        guard syncActive else { return false }
+    func push(_ c: LocalClip, once: Bool = false) -> Bool {
+        guard once ? canSendOne : syncActive else { return false }
         let content: PasteContent
         if let text = c.text { content = PasteContent(kind: "text", text: text, data: nil, mime: nil) }
         else if let data = c.data { content = PasteContent(kind: "image", text: nil, data: data, mime: c.mime) }
@@ -2389,7 +2394,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             it.target = self
             it.representedObject = c.id
             it.toolTip = "Dari \(c.source)" + (c.pending ? " · belum dikirim ke server / HP" : "") +
-                " · klik untuk menyalin ke clipboard Mac, tahan ⌥ lalu klik untuk menghapus"
+                " · klik untuk menyalin ke clipboard Mac, tahan ⇧ untuk mengirim, tahan ⌥ untuk menghapus"
             // tahan ⌥ → baris ini berganti jadi "Hapus" (alternate item: harus tepat setelah item utamanya,
             // tombol pintas sama dengan modifier berbeda → ⌥⌘0–⌥⌘9 menghapus)
             let del = NSMenuItem(title: "Hapus: \(c.title)", action: #selector(deleteClip(_:)), keyEquivalent: it.keyEquivalent)
@@ -2399,9 +2404,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             del.representedObject = c.id
             del.image = symbol("trash")
             del.toolTip = "Hapus dari riwayat Mac ini (tidak menghapus di server / HP)"
+            // tahan ⇧ → "Kirim": kirim clip ini saja ke server / HP (berguna saat kirim otomatis / sinkron mati)
+            let send = NSMenuItem(title: canSendOne ? "Kirim: \(c.title)" : "Kirim (nyalakan sinkron dulu): \(c.title)",
+                                  action: #selector(sendClip(_:)), keyEquivalent: it.keyEquivalent)
+            send.keyEquivalentModifierMask = it.keyEquivalent.isEmpty ? [.shift] : [.command, .shift]
+            send.isAlternate = true
+            send.isEnabled = canSendOne
+            send.target = self
+            send.representedObject = c.id
+            send.image = symbol("arrow.up.circle")
+            send.toolTip = lanMode ? "Kirim clip ini ke HP (Wi-Fi lokal)" : "Kirim clip ini ke server & browser"
             if n < inlineClips {
                 put(it)
                 put(del)
+                put(send)
             } else {
                 if more == nil {
                     let sub = NSMenu()
@@ -2413,10 +2429,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                 }
                 more?.addItem(it)
                 more?.addItem(del)
+                more?.addItem(send)
             }
         }
         if !list.isEmpty {
-            let tip = NSMenuItem(title: "Tahan ⌥ lalu klik clip untuk menghapusnya", action: nil, keyEquivalent: "")
+            let tip = NSMenuItem(title: "Tahan ⇧ untuk mengirim clip · tahan ⌥ untuk menghapus", action: nil, keyEquivalent: "")
             tip.attributedTitle = NSAttributedString(string: tip.title, attributes: [
                 .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize), .foregroundColor: NSColor.tertiaryLabelColor])
             tip.isEnabled = false
@@ -2592,6 +2609,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         history.bump(id)
     }
     /// ⌥ + klik (atau ⌥⌘0–9): hapus satu clip dari riwayat Mac, tanpa konfirmasi; bisa diurungkan dari menu
+    /// ⇧ + klik: kirim satu clip ke server / HP (juga saat kirim otomatis atau, di mode server, sinkron mati)
+    @objc func sendClip(_ s: NSMenuItem) {
+        guard let id = s.representedObject as? Int, let c = history.clip(id) else { return }
+        if push(c, once: true) { return flash() }
+        let a = NSAlert()
+        a.messageText = "Clip tidak terkirim"
+        if !canSendOne {
+            a.informativeText = lanMode ? "Wi-Fi lokal: nyalakan \"Sinkron dengan HP\" dulu di menu PasteLAN."
+                                        : "Mac ini belum login ke server PasteLAN (Pengaturan… → Koneksi)."
+        } else {
+            a.informativeText = "Gambar ini berasal dari server dan isinya belum diambil ke Mac (memang sudah ada di server)."
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        a.runModal()
+    }
     @objc func deleteClip(_ s: NSMenuItem) {
         guard let id = s.representedObject as? Int, let r = history.take(id) else { return }
         lastDeleted = r
@@ -2686,6 +2718,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
 
         Riwayat: klik salah satu clip di bagian atas menu (atau tekan ⌘0–⌘9 saat menu terbuka) untuk menyalinnya \
         lagi ke clipboard Mac. Klik kotak "Cari clip…" di menu untuk mencari. \
+        Tahan ⇧ (Shift) lalu klik sebuah clip untuk mengirim clip itu saja ke server / HP (juga saat kirim otomatis \
+        mati; di mode server juga saat sinkron mati). \
         Tahan ⌥ (Option) lalu klik sebuah clip (atau ⌥⌘0–⌥⌘9) untuk menghapusnya dari riwayat Mac; \
         "Urungkan hapus" di menu mengembalikannya. Jumlah clip yang diingat diatur di \
         Pengaturan → Umum.
