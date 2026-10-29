@@ -1889,6 +1889,28 @@ final class Updater: NSObject {
 
 // MARK: - Aplikasi
 
+/// Kotak teks tanpa latar sama sekali: saat diketik, macOS memasang "field editor" (NSTextView) yang menggambar
+/// kotak latar gelap/terang sendiri → latarnya dimatikan setiap kali kotak ini mulai diedit
+final class PlainTextField: NSTextField {
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        clearEditorBackground()
+        return ok
+    }
+
+    override func textDidBeginEditing(_ n: Notification) {
+        super.textDidBeginEditing(n)
+        clearEditorBackground()
+    }
+
+    private func clearEditorBackground() {
+        guard let editor = currentEditor() as? NSTextView else { return }
+        editor.drawsBackground = false
+        editor.backgroundColor = .clear
+        editor.enclosingScrollView?.drawsBackground = false
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSTextFieldDelegate {
     /// Lebar tetap & ikon kecil → ikon di menu bar tidak makan tempat (variableLength memberi jarak kiri-kanan lebih lebar)
     let item = NSStatusBar.system.statusItem(withLength: 18)
@@ -1902,7 +1924,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     let history = History()
     lazy var settings = SettingsWindow(app: self)
     /// Kotak cari di menu: teks polos tanpa bingkai (hanya ikon kaca pembesar + placeholder), setinggi satu baris menu
-    let searchField = NSTextField(frame: NSRect(x: 36, y: 3, width: 250, height: 18))
+    let searchField = PlainTextField(frame: NSRect(x: 36, y: 3, width: 250, height: 18))
     var flashTimer: Timer?
     var menuOpen = false
     var lastDeleted: (clip: LocalClip, index: Int)? // untuk "Urungkan hapus" (satu clip terakhir)
@@ -1944,6 +1966,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         searchField.isBordered = false
         searchField.isBezeled = false
         searchField.drawsBackground = false
+        searchField.backgroundColor = .clear
         searchField.focusRingType = .none
         searchField.font = .menuFont(ofSize: 0)
         searchField.cell?.isScrollable = true
