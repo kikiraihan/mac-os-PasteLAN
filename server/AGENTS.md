@@ -26,7 +26,10 @@ publik, jadi siapa pun tahu nilainya.
 
 ## Langkah pasang / perbarui
 
-Ikuti `README.md` (bagian *Pasang di VPS* dan *Memperbarui server*). Setelah selesai:
+Ikuti `README.md` (bagian *Pasang di VPS* dan *Memperbarui server*). Pemasangan pertama selalu manual; setelah itu
+update lewat CI/CD ([`CICD.md`](CICD.md): `deploy/deploy.sh` dengan backup, health check & rollback otomatis).
+Secret GitHub hanya berisi data SSH, **jangan** pernah memasukkan password PasteLAN ke secret / workflow.
+Setelah selesai:
 
 1. `systemctl status pastelan` aktif, log berisi `PasteLAN server <versi> di 127.0.0.1:8080`.
 2. `https://domain/admin` bisa dibuka (HTTPS lewat Caddy).

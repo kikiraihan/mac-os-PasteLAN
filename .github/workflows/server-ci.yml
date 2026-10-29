@@ -1,0 +1,83 @@
+name: Server CI
+
+# Cek & build server Go di Linux (lebih cepat dari runner macOS di build.yml).
+# Dipanggil deploy-server.yml supaya deploy hanya jalan kalau semua cek hijau.
+on:
+  pull_request:
+    paths:
+      - "server/**"
+      - ".github/workflows/server-ci.yml"
+      - ".github/workflows/deploy-server.yml"
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      version:
+        description: "Versi binary (dari Resources/Info.plist + commit)"
+        value: ${{ jobs.server.outputs.version }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  server:
+    name: Server (Go)
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache: false
+
+      - name: gofmt
+        working-directory: server
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "File berikut belum di-gofmt (jalankan: cd server && gofmt -w .):"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        working-directory: server
+        run: go vet ./...
+
+      - name: go test
+        working-directory: server
+        run: go test -race -count=1 ./...
+
+      - name: Cek script deploy
+        run: bash -n server/deploy/deploy.sh server/deploy/rollback.sh server/deploy/deploy-remote.sh
+
+      # versi = CFBundleShortVersionString + commit, mis. v1.2.0+abc1234 (tampil di log server & halaman admin)
+      - name: Versi
+        id: ver
+        run: |
+          v=$(grep -A1 CFBundleShortVersionString Resources/Info.plist | sed -nE 's/.*<string>([^<]+)<\/string>.*/\1/p')
+          echo "version=v${v}+${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binary Linux (amd64 & arm64)
+        working-directory: server
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          mkdir -p ../dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath \
+              -ldflags="-s -w -X main.version=${VERSION}" -o ../dist/pastelan-server-linux-$arch .
+          done
+          ls -la ../dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pastelan-server
+          path: dist/pastelan-server-linux-*
+          retention-days: 7

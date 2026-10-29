@@ -43,6 +43,8 @@ Merge ke `main` dengan versi yang belum punya tag akan otomatis membuat tag `v<v
     Halaman admin `/admin` (`web/admin.html` + `admin.js`, password `PASTELAN_ADMIN_PASSWORD`): link setup, perangkat,
     password perangkat (opsional, hash PBKDF2 di `settings.json`), batas riwayat. Agen yang memasang server: baca
     `server/AGENTS.md` (jangan salin password contoh dari `deploy/pastelan.env.example`).
+    CI/CD server: `server-ci.yml` (cek + build) dan `deploy-server.yml` (push `main` yang mengubah `server/` → SSH →
+    `server/deploy/deploy.sh`: backup, health check, rollback otomatis). Panduan: `server/CICD.md`.
 - Versi di `Resources/Info.plist` berlaku untuk keduanya (satu rilis = aplikasi Mac + binary server).
 - Rencana kerja ada di `_todo/` (satu folder per inisiatif: file sprint + `00-tracker.md`).
   Perbarui tracker setiap kali tugas selesai.

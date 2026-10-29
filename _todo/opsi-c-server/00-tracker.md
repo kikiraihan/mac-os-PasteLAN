@@ -34,4 +34,6 @@ sebagai aplikasi. Opsi A tetap terdokumentasi di `../opsi-a-mac-app-plus-browser
 - [x] v1.2.0: web: hapus per item & "Hapus semua" (tersinkron ke semua perangkat lewat `ids` / `rev`)
 - [ ] Uji di Mac & HP nyata: login, install PWA, kirim dua arah, cabut perangkat
 - [ ] Uji metode Wi-Fi lokal di Mac nyata & ganti-ganti metode
-- [ ] Pasang server di VPS pemilik
+- [x] CI/CD server (pola Racik): `server-ci.yml` + `deploy-server.yml` → SSH, `deploy/deploy.sh` (backup data,
+      health check, rollback otomatis), `deploy/rollback.sh`, `deploy/deploy-remote.sh`; panduan `server/CICD.md`
+- [ ] Pasang server di VPS pemilik + isi secret deploy (SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, SSH_KNOWN_HOSTS)
