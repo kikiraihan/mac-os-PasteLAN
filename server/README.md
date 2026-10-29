@@ -17,20 +17,29 @@ halaman web / PWA ikut di dalamnya. Butuh ±20–40 MB RAM.
 [`deploy/pastelan.env.example`](deploy/pastelan.env.example). Password contoh di file itu **ditolak** server, jadi
 harus diganti (lihat juga [`AGENTS.md`](AGENTS.md) untuk agen AI yang memasang server).
 
-Ganti password admin = ubah `PASTELAN_ADMIN_PASSWORD` lalu restart. Password perangkat diganti dari halaman admin
+Ganti password admin dari halaman admin → **Keamanan** (wajib mengetik password sekarang). Password baru disimpan
+sebagai hash PBKDF2 di `settings.json` dan menggantikan `PASTELAN_ADMIN_PASSWORD`; browser lain yang sedang masuk
+admin dikeluarkan. Lupa password baru? Hapus baris `"adminPassword"` di `settings.json` (folder data, mis.
+`/var/lib/pastelan`) lalu `sudo systemctl restart pastelan` → password kembali ke `PASTELAN_ADMIN_PASSWORD`.
+Selama password admin belum diganti dari halaman admin, mengubah `PASTELAN_ADMIN_PASSWORD` + restart juga bisa. Password perangkat diganti dari halaman admin
 (yang dari admin menang atas `PASTELAN_PASSWORD`). Perangkat yang sudah login tetap jalan (tokennya tidak bergantung
 pada password); cabut lewat halaman admin / Pengaturan kalau perlu.
 
 ## Halaman admin
 
-Buka `https://domain-anda/admin`, masuk dengan `PASTELAN_ADMIN_PASSWORD`:
+Buka `https://domain-anda/admin`, masuk dengan password admin. Empat bagian (di layar kecil jadi tab di bawah):
 
-- **Buat link setup**: link sekali pakai (`https://domain/#pair=…`, default 10 menit) untuk perangkat baru. Mac: menu
-  PasteLAN → *Atur server & login…* → tempel link. HP: buka link di browser.
-- **Riwayat clipboard**: hapus otomatis (ya / tidak) dan lama penyimpanan, jumlah item maksimal, total memori
-  maksimal, masa berlaku link setup, hapus semua riwayat.
-- **Login dengan password**: aktif / mati, buat / ganti password perangkat (disimpan sebagai hash PBKDF2).
-- **Perangkat**: daftar, cabut satu, cabut semua.
+- **Ringkasan**: jumlah perangkat, isi clipboard & memori terpakai, status login password, perangkat terakhir aktif,
+  tombol **Buat link setup**.
+- **Perangkat**: link setup sekali pakai (`https://domain/#pair=…`, default 10 menit, dengan hitung mundur) untuk
+  perangkat baru — Mac: menu PasteLAN → *Atur server & login…* → tempel link; HP: buka link di browser. Daftar
+  perangkat, cabut satu, cabut semua.
+- **Clipboard**: hapus otomatis (ya / tidak) dan lama penyimpanan, jumlah item maksimal, total memori maksimal,
+  hapus semua riwayat.
+- **Keamanan**: ganti password admin, login dengan password perangkat (aktif / mati, buat / ganti, hash PBKDF2),
+  masa berlaku link setup.
+
+Tema terang / gelap / ikuti sistem (tombol di kanan atas, disimpan per browser).
 
 ## Pasang di VPS (systemd + Caddy)
 

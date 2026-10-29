@@ -24,6 +24,7 @@ const pbkdf2Iter = 600_000
 type settings struct {
 	PasswordLogin    bool   `json:"passwordLogin"`            // perangkat boleh login dengan password bersama
 	DevicePassword   string `json:"devicePassword,omitempty"` // hash PBKDF2 password bersama (kosong → PASTELAN_PASSWORD)
+	AdminPassword    string `json:"adminPassword,omitempty"`  // hash PBKDF2 password admin (kosong → PASTELAN_ADMIN_PASSWORD)
 	AutoClear        bool   `json:"autoClear"`                // hapus isi clipboard otomatis setelah RetentionMinutes
 	RetentionMinutes int    `json:"retentionMinutes"`
 	MaxItems         int    `json:"maxItems"`

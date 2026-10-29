@@ -9,7 +9,7 @@ import (
 
 // Halaman admin (/admin): masuk dengan PASTELAN_ADMIN_PASSWORD → sesi admin di cookie terpisah (HttpOnly, Secure,
 // SameSite=Strict, hanya untuk /api/admin). Admin bisa membuat link setup, mengelola perangkat, password bersama,
-// dan batas riwayat clipboard.
+// batas riwayat clipboard, dan mengganti password admin sendiri (hash PBKDF2 di settings.json, menggantikan env).
 
 const adminCookie = "pl_admin"
 
@@ -19,6 +19,7 @@ func (a *app) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/admin/status", a.admin(a.adminStatus))
 	mux.HandleFunc("PUT /api/admin/settings", a.admin(a.adminSettings))
 	mux.HandleFunc("POST /api/admin/password", a.admin(a.adminPassword))
+	mux.HandleFunc("POST /api/admin/admin-password", a.admin(a.adminChangeAdminPassword))
 	mux.HandleFunc("POST /api/admin/setup-link", a.admin(a.adminSetupLink))
 	mux.HandleFunc("DELETE /api/admin/devices/{id}", a.admin(a.adminRevoke))
 	mux.HandleFunc("DELETE /api/admin/devices", a.admin(a.adminRevokeAll))
@@ -88,6 +89,7 @@ func (a *app) adminView(s settings) map[string]any {
 		"passwordLogin":    s.PasswordLogin,
 		"devicePasswordOK": s.DevicePassword != "" || a.auth.hasEnvPw,
 		"passwordFromEnv":  s.DevicePassword == "" && a.auth.hasEnvPw,
+		"adminFromEnv":     s.AdminPassword == "",
 		"autoClear":        s.AutoClear,
 		"retentionMinutes": s.RetentionMinutes,
 		"maxItems":         s.MaxItems,
@@ -109,11 +111,12 @@ func (a *app) adminStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	count, bytes := a.store.stats()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":  version,
-		"settings": a.adminView(a.settings.get()),
-		"devices":  devs,
-		"items":    count,
-		"bytes":    bytes,
+		"version":    version,
+		"settings":   a.adminView(a.settings.get()),
+		"devices":    devs,
+		"maxDevices": maxDevices,
+		"items":      count,
+		"bytes":      bytes,
 	})
 }
 
@@ -169,7 +172,7 @@ func (a *app) adminPassword(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if a.auth.hasAdmin && sha256Equal(req.Password, a.auth.adminHash) {
+	if a.auth.adminPasswordOK(req.Password) {
 		jsonError(w, http.StatusBadRequest, "password perangkat harus berbeda dari password admin")
 		return
 	}
@@ -188,6 +191,53 @@ func (a *app) adminPassword(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, "gagal menyimpan: "+err.Error())
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"settings": a.adminView(s)})
+}
+
+// adminChangeAdminPassword mengganti password admin. Wajib mengetik password sekarang (salah → dihitung seperti
+// login gagal). Hash PBKDF2 disimpan di settings.json dan menggantikan PASTELAN_ADMIN_PASSWORD; sesi admin lain
+// dikeluarkan, sesi yang dipakai sekarang tetap.
+func (a *app) adminChangeAdminPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Current, Password string }
+	if !decode(w, r, &req) {
+		return
+	}
+	switch err := a.auth.checkAdminPassword(clientIP(r), req.Current); {
+	case errors.Is(err, errLocked):
+		jsonError(w, http.StatusTooManyRequests, err.Error())
+		return
+	case err != nil:
+		jsonError(w, http.StatusForbidden, "password admin sekarang salah")
+		return
+	}
+	if err := checkNewPassword(req.Password); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Password == req.Current {
+		jsonError(w, http.StatusBadRequest, "password baru sama dengan yang sekarang")
+		return
+	}
+	if a.auth.devicePasswordOK(a.settings.get(), req.Password) {
+		jsonError(w, http.StatusBadRequest, "password admin harus berbeda dari password perangkat")
+		return
+	}
+	hashSlots <- struct{}{}
+	h, err := hashPassword(req.Password)
+	<-hashSlots
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s, err := a.settings.update(func(s *settings) error {
+		s.AdminPassword = h
+		return nil
+	})
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "gagal menyimpan: "+err.Error())
+		return
+	}
+	a.auth.keepOnlyAdmin(adminToken(r))
 	writeJSON(w, http.StatusOK, map[string]any{"settings": a.adminView(s)})
 }
 

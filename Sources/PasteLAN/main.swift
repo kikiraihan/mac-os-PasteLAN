@@ -54,6 +54,16 @@ func fileExt(_ mime: String?) -> String {
     }
 }
 
+/// Cuplikan satu baris isi clipboard untuk menu (gaya Clipy: teks apa adanya, dipotong dengan "…")
+func clipTitle(kind: String, text: String?, mime: String?, size: Int) -> String {
+    if kind == "image" { return "🖼 Gambar \(fileExt(mime).uppercased()), \(byteString(size))" }
+    var line = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        .components(separatedBy: .newlines).first ?? ""
+    line = line.replacingOccurrences(of: "\t", with: " ")
+    if line.count > 45 { line = String(line.prefix(45)) + "…" }
+    return line.isEmpty ? "(spasi kosong)" : line
+}
+
 func byteString(_ n: Int) -> String {
     ByteCountFormatter.string(fromByteCount: Int64(n), countStyle: .file)
 }
@@ -248,15 +258,10 @@ struct Clip: Decodable {
     let from: String   // nama perangkat pengirim
     let device: String // id perangkat pengirim
 
-    /// Cuplikan satu baris untuk submenu Riwayat
-    func title(me: String) -> String {
-        let icon = device == me ? "💻" : "📱"
-        if kind == "image" { return "\(icon)  🖼 Gambar \(fileExt(mime).uppercased()), \(byteString(size))" }
-        var line = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            .components(separatedBy: .newlines).first ?? ""
-        if line.count > 40 { line = String(line.prefix(40)) + "…" }
-        return "\(icon)  \(line.isEmpty ? "(spasi kosong)" : line)"
-    }
+    /// Cuplikan satu baris untuk daftar riwayat di menu
+    var title: String { clipTitle(kind: kind, text: text, mime: mime, size: size) }
+    /// Keterangan pengirim (tooltip di menu)
+    func source(me: String) -> String { device == me ? "Dari Mac ini" : "Dari \(from)" }
 }
 
 /// Klien server PasteLAN: login dengan password → token Bearer, long-poll item baru, kirim teks / gambar.
@@ -573,15 +578,10 @@ struct LANClip {
         return d
     }
 
-    /// Cuplikan satu baris untuk submenu Riwayat
-    var title: String {
-        let icon = from == "mac" ? "💻" : "📱"
-        if kind == "image" { return "\(icon)  🖼 Gambar \(fileExt(mime).uppercased()), \(byteString(size))" }
-        var line = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            .components(separatedBy: .newlines).first ?? ""
-        if line.count > 40 { line = String(line.prefix(40)) + "…" }
-        return "\(icon)  \(line.isEmpty ? "(spasi kosong)" : line)"
-    }
+    /// Cuplikan satu baris untuk daftar riwayat di menu
+    var title: String { clipTitle(kind: kind, text: text, mime: mime, size: size) }
+    /// Keterangan pengirim (tooltip di menu)
+    var source: String { from == "mac" ? "Dari Mac ini" : "Dari HP" }
 }
 
 final class LANStore {
@@ -1343,7 +1343,7 @@ enum Page {
       function expired() {
         stopped = true;
         setStatus('off', 'Link tidak berlaku');
-        $('list').innerHTML = '<div class="card empty">Link ini sudah tidak berlaku. Klik ikon ⇄ PasteLAN di menu bar Mac, lalu scan ulang QR code-nya.</div>';
+        $('list').innerHTML = '<div class="card empty">Link ini sudah tidak berlaku. Klik ikon PasteLAN (penjepit kertas) di menu bar Mac → Tambah HP, lalu scan ulang QR code-nya.</div>';
       }
 
       // Semua request terenkripsi: X-Auth membuktikan pemegang kunci (sekali pakai), body & jawaban 200 berupa
@@ -1988,56 +1988,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Susunan menu (gaya Clipy): riwayat clip langsung di atas (⌘0–⌘9 untuk 10 teratas), lalu status & tambah HP,
+    /// lalu semua pengaturan di submenu "Pengaturan", terakhir "Keluar".
     func menuNeedsUpdate(_ m: NSMenu) {
         menu.removeAllItems()
+        updater.menuItem.menu?.removeItem(updater.menuItem) // masih tercantol di submenu Pengaturan yang lama
 
-        let head = NSMenuItem(title: "PasteLAN", action: nil, keyEquivalent: "")
-        head.isEnabled = false
-        menu.addItem(head)
-        add("Berbagi aktif", #selector(toggleSharing), on: sharing)
-        let method = NSMenuItem(title: lanMode ? "Metode: Wi-Fi lokal" : "Metode: Server PasteLAN", action: nil, keyEquivalent: "")
-        let mm = NSMenu()
-        mm.autoenablesItems = false
-        for (title, action, on) in [("Server PasteLAN (internet, bisa di-install di HP)", #selector(useServerMode), !lanMode),
-                                    ("Wi-Fi lokal (tanpa server, HP di jaringan yang sama)", #selector(useLANMode), lanMode)] {
-            let it = NSMenuItem(title: title, action: action, keyEquivalent: "")
-            it.target = self
-            it.state = on ? .on : .off
-            mm.addItem(it)
-        }
-        method.submenu = mm
-        menu.addItem(method)
-
+        addHistorySection()
         menu.addItem(.separator())
         if lanMode { addLANSection() } else { addServerSection() }
-        addHistorySection()
-
         menu.addItem(.separator())
-        add("Buka saat login", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled)
-        add("Cara pakai…", #selector(showHelp))
-        menu.addItem(updater.menuItem)
-        add("Uninstall PasteLAN…", #selector(uninstall))
-        menu.addItem(NSMenuItem(title: "Keluar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let pref = NSMenuItem(title: "Pengaturan", action: nil, keyEquivalent: "")
+        pref.image = symbol("gearshape")
+        pref.submenu = settingsMenu()
+        menu.addItem(pref)
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Keluar PasteLAN", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    /// Jumlah clip yang tampil langsung di menu; sisanya di submenu "Riwayat lainnya"
+    let inlineClips = 20
+
+    func addHistorySection() {
+        let head = NSMenuItem(title: "Pilih clip untuk disalin ke clipboard", action: nil, keyEquivalent: "")
+        head.isEnabled = false
+        menu.addItem(head)
+        let entries: [(id: Int, title: String, tip: String)] = lanMode
+            ? lan.store.items.reversed().map { ($0.id, $0.title, $0.source) }
+            : server.items.reversed().map { ($0.id, $0.title, $0.source(me: server.me)) }
+        if entries.isEmpty {
+            let e = NSMenuItem(title: "Belum ada riwayat. Copy sesuatu di Mac atau kirim dari HP.", action: nil, keyEquivalent: "")
+            e.isEnabled = false
+            menu.addItem(e)
+        }
+        var more: NSMenu?
+        for (i, c) in entries.enumerated() {
+            // ⌘0 … ⌘9 untuk sepuluh clip terbaru (berlaku selama menu terbuka)
+            let it = NSMenuItem(title: c.title, action: #selector(recopy(_:)), keyEquivalent: i < 10 ? "\(i)" : "")
+            it.target = self
+            it.representedObject = c.id
+            it.toolTip = "\(c.tip) · klik untuk menyalin ke clipboard Mac"
+            if i < inlineClips {
+                menu.addItem(it)
+            } else {
+                if more == nil {
+                    more = NSMenu()
+                    more?.autoenablesItems = false
+                    let mi = NSMenuItem(title: "Riwayat lainnya (\(entries.count - inlineClips))", action: nil, keyEquivalent: "")
+                    mi.submenu = more
+                    menu.addItem(mi)
+                }
+                more?.addItem(it)
+            }
+        }
+        menu.addItem(.separator())
+        add(lanMode ? "Hapus semua riwayat" : "Hapus semua riwayat (semua perangkat)", #selector(clearHistory), enabled: !entries.isEmpty)
     }
 
     func addServerSection() {
         let st = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
         st.isEnabled = false
+        st.image = statusDot(sharing && loggedIn && server.state == .connected)
         menu.addItem(st)
         if loggedIn, serverURL != nil {
             add("Tambah HP (scan QR, tanpa password)…", #selector(pairPhone))
-            add("Buka PasteLAN di browser (kelola perangkat)", #selector(openWeb))
-            add("Ganti server…", #selector(setupServer))
-            add("Keluar dari server…", #selector(logoutServer))
+            add("Buka PasteLAN di browser", #selector(openWeb))
         } else {
             add("Atur server & login…", #selector(setupServer))
         }
     }
 
+    /// Wi-Fi lokal: status di menu utama, QR code & link di submenu "Tambah HP" supaya menu tetap ringkas
     func addLANSection() {
         guard sharing else {
             let st = NSMenuItem(title: "Berbagi dimatikan", action: nil, keyEquivalent: "")
             st.isEnabled = false
+            st.image = statusDot(false)
             menu.addItem(st)
             return
         }
@@ -2047,16 +2073,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         else if !lan.running { info = "Menyalakan server…" }
         else if url == nil { info = "Mac belum terhubung ke Wi-Fi / jaringan lokal." }
         else { info = "Scan dengan kamera HP (Wi-Fi yang sama)" }
+        let n = lan.connectedCount
+        let st = NSMenuItem(title: url == nil ? info : (n > 0 ? "Wi-Fi lokal · \(n) perangkat terhubung" : "Wi-Fi lokal · belum ada perangkat"),
+                            action: nil, keyEquivalent: "")
+        st.isEnabled = false
+        st.image = statusDot(lan.running && url != nil)
+        menu.addItem(st)
+
+        let pair = NSMenuItem(title: "Tambah HP (scan QR)", action: nil, keyEquivalent: "")
+        let pm = NSMenu()
+        pm.autoenablesItems = false
         let qr = NSMenuItem()
         qr.view = qrView(url: url, info: info)
-        menu.addItem(qr)
-        if url != nil {
-            add("Salin link", #selector(copyLink))
-            let n = lan.connectedCount
-            let st = NSMenuItem(title: n > 0 ? "📱 \(n) perangkat terhubung" : "Belum ada perangkat terhubung", action: nil, keyEquivalent: "")
-            st.isEnabled = false
-            menu.addItem(st)
-        }
+        pm.addItem(qr)
+        if url != nil { add("Salin link", #selector(copyLink), to: pm) }
         if lan.running {
             // HP tidak bisa membuka halaman? Kalau di sini tidak muncul IP HP, permintaannya tidak sampai ke Mac
             let text: String
@@ -2069,50 +2099,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             let lp = NSMenuItem(title: text, action: nil, keyEquivalent: "")
             lp.isEnabled = false
-            menu.addItem(lp)
+            pm.addItem(lp)
         }
-        add("Reset link (putuskan semua HP)…", #selector(resetLink))
+        pair.submenu = pm
+        menu.addItem(pair)
     }
 
-    func addHistorySection() {
-        menu.addItem(.separator())
-        let hist = NSMenuItem(title: "Riwayat", action: nil, keyEquivalent: "")
-        let hm = NSMenu()
-        hm.autoenablesItems = false
-        let entries: [(id: Int, title: String)] = lanMode
-            ? lan.store.items.reversed().map { ($0.id, $0.title) }
-            : server.items.reversed().map { ($0.id, $0.title(me: server.me)) }
-        if entries.isEmpty {
-            let e = NSMenuItem(title: "Belum ada", action: nil, keyEquivalent: "")
-            e.isEnabled = false
-            hm.addItem(e)
-        } else {
-            for c in entries {
-                let it = NSMenuItem(title: c.title, action: #selector(recopy(_:)), keyEquivalent: "")
-                it.target = self
-                it.representedObject = c.id
-                it.toolTip = "Klik untuk menyalin lagi ke clipboard Mac"
-                hm.addItem(it)
-            }
-            hm.addItem(.separator())
-            let cl = NSMenuItem(title: lanMode ? "Hapus riwayat" : "Hapus riwayat (semua perangkat)", action: #selector(clearHistory), keyEquivalent: "")
-            cl.target = self
-            hm.addItem(cl)
+    /// Submenu "Pengaturan": semua opsi yang jarang diubah
+    func settingsMenu() -> NSMenu {
+        let pm = NSMenu()
+        pm.autoenablesItems = false
+        add("Berbagi aktif", #selector(toggleSharing), on: sharing, to: pm)
+        let method = NSMenuItem(title: lanMode ? "Metode: Wi-Fi lokal" : "Metode: Server PasteLAN", action: nil, keyEquivalent: "")
+        let mm = NSMenu()
+        mm.autoenablesItems = false
+        for (title, action, on) in [("Server PasteLAN (internet, bisa di-install di HP)", #selector(useServerMode), !lanMode),
+                                    ("Wi-Fi lokal (tanpa server, HP di jaringan yang sama)", #selector(useLANMode), lanMode)] {
+            add(title, action, on: on, to: mm)
         }
-        hist.submenu = hm
-        menu.addItem(hist)
-        add("Kirim clipboard Mac otomatis", #selector(toggleAutoSend), on: autoSend)
-        add("Kirim clipboard Mac sekarang", #selector(sendNow), enabled: sharing && (lanMode || loggedIn))
-        add("Simpan juga gambar dari HP ke Unduhan", #selector(toggleSaveImages), on: d.bool(forKey: "saveImages"))
+        method.submenu = mm
+        pm.addItem(method)
+
+        pm.addItem(.separator())
+        add("Kirim clipboard Mac otomatis", #selector(toggleAutoSend), on: autoSend, to: pm)
+        add("Kirim clipboard Mac sekarang", #selector(sendNow), enabled: sharing && (lanMode || loggedIn), to: pm)
+        add("Simpan juga gambar dari HP ke Unduhan", #selector(toggleSaveImages), on: d.bool(forKey: "saveImages"), to: pm)
+
+        pm.addItem(.separator())
+        if lanMode {
+            add("Reset link (putuskan semua HP)…", #selector(resetLink), to: pm)
+        } else if loggedIn, serverURL != nil {
+            add("Ganti server…", #selector(setupServer), to: pm)
+            add("Keluar dari server…", #selector(logoutServer), to: pm)
+        } else {
+            add("Atur server & login…", #selector(setupServer), to: pm)
+        }
+
+        pm.addItem(.separator())
+        add("Buka saat login", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled, to: pm)
+        add("Cara pakai…", #selector(showHelp), to: pm)
+        pm.addItem(updater.menuItem)
+        add("Uninstall PasteLAN…", #selector(uninstall), to: pm)
+        return pm
+    }
+
+    /// Titik status kecil (hijau = tersambung, abu-abu = tidak) di depan baris status
+    func statusDot(_ on: Bool) -> NSImage {
+        NSImage(size: NSSize(width: 10, height: 10), flipped: false) { r in
+            (on ? NSColor.systemGreen : NSColor.tertiaryLabelColor).setFill()
+            NSBezierPath(ovalIn: r.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
     }
 
     @discardableResult
-    func add(_ title: String, _ action: Selector, on: Bool? = nil, enabled: Bool = true) -> NSMenuItem {
+    func add(_ title: String, _ action: Selector, on: Bool? = nil, enabled: Bool = true, to target: NSMenu? = nil) -> NSMenuItem {
         let it = NSMenuItem(title: title, action: action, keyEquivalent: "")
         it.target = self
         it.isEnabled = enabled
         if let on { it.state = on ? .on : .off }
-        menu.addItem(it)
+        (target ?? menu).addItem(it)
         return it
     }
 
@@ -2241,7 +2287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         PasteLAN memindahkan teks & gambar antara Mac dan HP lewat server PasteLAN milik Anda sendiri (HTTPS). \
         Mac dan HP tidak perlu di Wi-Fi yang sama.
 
-        1. Buka https://server-anda/admin → "Buat link setup", lalu di Mac klik ikon ⇄ di menu bar → \
+        1. Buka https://server-anda/admin → "Buat link setup", lalu di Mac klik ikon penjepit kertas di menu bar → \
         "Atur server & login…" dan tempel link itu (atau isi alamat server + password perangkat).
         2. Menu → "Tambah HP (scan QR)…", scan dengan kamera HP (HP langsung masuk tanpa password), lalu pilih \
         "Install" / "Tambahkan ke Layar Utama" supaya PasteLAN jadi aplikasi di HP. \
@@ -2253,9 +2299,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hilang setelah 24 jam / saat server restart). Isi dari password manager tidak pernah dikirim. \
         Perangkat yang hilang bisa dicabut dari halaman PasteLAN → Pengaturan.
 
-        Tanpa server: menu → Metode → "Wi-Fi lokal". Mac dan HP harus di Wi-Fi yang sama (atau Mac memakai \
-        hotspot HP); scan QR code di menu. Isi dienkripsi dengan kunci di QR code. Wi-Fi kantor / kampus / \
-        publik sering memblokir antar-perangkat. "Reset link" memutus semua HP yang pernah terhubung.
+        Riwayat: klik salah satu clip di bagian atas menu (atau tekan ⌘0–⌘9 saat menu terbuka) untuk menyalinnya \
+        lagi ke clipboard Mac.
+
+        Tanpa server: menu → Pengaturan → Metode → "Wi-Fi lokal". Mac dan HP harus di Wi-Fi yang sama (atau Mac memakai \
+        hotspot HP); scan QR code di menu → "Tambah HP". Isi dienkripsi dengan kunci di QR code. Wi-Fi kantor / kampus / \
+        publik sering memblokir antar-perangkat. Pengaturan → "Reset link" memutus semua HP yang pernah terhubung.
         """
         NSApp.activate(ignoringOtherApps: true)
         a.runModal()
