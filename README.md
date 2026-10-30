@@ -31,6 +31,9 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
   klik item atau tekan **⌘0–⌘9** saat menu terbuka untuk menyalinnya lagi, plus kotak **Cari clip…**;
   **tahan ⌥ lalu klik** (atau ⌥⌘0–⌥⌘9) untuk menghapus satu clip, bisa diurungkan dari menu; **tahan ⇧ lalu klik** untuk
   mengirim satu clip saja ke server / HP (berguna saat kirim otomatis / sinkron mati)
+- **Riwayat tetap ada setelah restart** (seperti CopyClip): riwayat Mac disimpan di
+  `~/Library/Application Support/PasteLAN/History` (hanya bisa dibaca akun Anda). Bisa dimatikan di
+  **Pengaturan… → Umum → Simpan riwayat di Mac** (riwayat lalu hanya di memori, file lama langsung dihapus)
 - **Sinkron bisa dimatikan** dari menu: PasteLAN jadi clipboard manager saja. Saat dinyalakan lagi hanya copy baru
   yang dikirim; clip lama bisa dicentang lalu dikirim dari **Clipboard manager…** (tab Clipboard di Pengaturan)
 - **Pencarian clip** juga di halaman web (browser / HP)

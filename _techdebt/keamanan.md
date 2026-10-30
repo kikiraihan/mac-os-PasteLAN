@@ -28,6 +28,15 @@
 - **Pemilik / pembobol server yang sedang berjalan**: bisa membaca isi clipboard di memori. Diterima (dipilih
   pemilik: tanpa E2E supaya tetap simpel).
 
+## Riwayat Mac di disk (v1.7.0)
+
+- Riwayat clipboard manager disimpan di `~/Library/Application Support/PasteLAN/History` (folder 0700,
+  `history.json` + file gambar 0600) supaya tetap ada setelah restart, seperti CopyClip / Clipy. Siapa pun / apa pun yang
+  bisa membaca file akun macOS pengguna bisa membaca riwayat ini. Bisa dimatikan (Pengaturan → Umum → "Simpan riwayat
+  di Mac") → semua file riwayat langsung dihapus, riwayat hanya di memori. Uninstall juga menghapusnya.
+- Isi bertanda rahasia password manager (`org.nspasteboard.ConcealedType` dkk.) tetap tidak pernah masuk riwayat.
+- Isi clipboard di **server** tetap hanya di memori (aturan ini tidak berubah).
+
 ## Model ancaman — metode Wi-Fi lokal (opsional)
 
 - **Penyadap pasif di Wi-Fi yang sama**: tidak bisa membaca / memalsukan / mengulang (ChaCha20-Poly1305, kunci di

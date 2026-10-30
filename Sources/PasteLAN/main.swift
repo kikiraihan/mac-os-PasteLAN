@@ -249,7 +249,7 @@ final class Clipboard {
     }
 }
 
-// MARK: - Riwayat clipboard Mac (clipboard manager; hanya di memori, tidak pernah ditulis ke disk)
+// MARK: - Riwayat clipboard Mac (clipboard manager; di memori, salinannya disimpan di disk kecuali dimatikan)
 
 /// Satu clip di riwayat Mac. Kelas (bukan struct) supaya status kirimnya bisa diperbarui setelah server menjawab.
 final class LocalClip {
@@ -304,7 +304,7 @@ final class LocalClip {
 /// Riwayat clipboard Mac: semua copy di Mac (juga saat sinkron mati) + kiriman dari perangkat lain. Terbaru di depan.
 final class History {
     private(set) var items: [LocalClip] = []
-    private var nextID = 1
+    private(set) var nextID = 1
     let maxImageBytes = 200 * 1024 * 1024
     var limit = 15 {
         didSet {
@@ -349,6 +349,14 @@ final class History {
 
     func clip(_ id: Int) -> LocalClip? { items.first { $0.id == id } }
 
+    /// Isi dari HistoryStore saat aplikasi dibuka
+    func load(_ clips: [LocalClip], nextID n: Int) {
+        items = clips
+        nextID = max(n, (clips.map(\.id).max() ?? 0) + 1)
+        trim()
+        onChange?()
+    }
+
     /// Clip yang disalin lagi naik ke paling atas (seperti Clipy)
     func bump(_ id: Int) {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
@@ -389,6 +397,97 @@ final class History {
     private func trim() {
         if items.count > limit { items.removeLast(items.count - limit) }
         while items.count > 1, items.reduce(0, { $0 + ($1.data?.count ?? 0) }) > maxImageBytes { items.removeLast() }
+    }
+}
+
+/// Riwayat Mac di disk (seperti CopyClip): tetap ada setelah PasteLAN / Mac di-restart. Folder
+/// ~/Library/Application Support/PasteLAN/History (0700): history.json + satu file per gambar (0600).
+/// Id item server tidak disimpan (berubah saat server restart); gambar dari server yang belum diambil tidak disimpan.
+final class HistoryStore {
+    private struct Saved: Codable {
+        let nextID: Int
+        let items: [Item]
+    }
+    private struct Item: Codable {
+        let id: Int
+        let kind: String
+        let text: String?
+        let mime: String?
+        let size: Int
+        let from: String
+        let time: Date
+        let synced: Bool
+    }
+
+    let dir: URL
+    private var work: DispatchWorkItem?
+
+    init(dir: URL) { self.dir = dir }
+
+    private var jsonURL: URL { dir.appendingPathComponent("history.json") }
+    private func imageURL(_ id: Int) -> URL { dir.appendingPathComponent("img-\(id)") }
+
+    /// Simpan sebentar kemudian (perubahan beruntun → satu kali tulis)
+    func saveSoon(_ h: History) {
+        work?.cancel()
+        let w = DispatchWorkItem { [weak self, weak h] in
+            if let self, let h { self.save(h) }
+        }
+        work = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: w)
+    }
+
+    func save(_ h: History) {
+        work?.cancel()
+        work = nil
+        let fm = FileManager.default
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var keep = Set<String>(["history.json"])
+        var items: [Item] = []
+        for c in h.items {
+            if c.kind == "image" {
+                guard let data = c.data else { continue } // gambar di server yang belum diambil
+                let url = imageURL(c.id)
+                keep.insert(url.lastPathComponent)
+                if !fm.fileExists(atPath: url.path) { // isi clip tidak pernah berubah → cukup ditulis sekali
+                    guard (try? data.write(to: url, options: .atomic)) != nil else { continue }
+                    try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                }
+            }
+            items.append(Item(id: c.id, kind: c.kind, text: c.text, mime: c.mime, size: c.size, from: c.from,
+                              time: c.time, synced: c.synced))
+        }
+        if let data = try? JSONEncoder().encode(Saved(nextID: h.nextID, items: items)) {
+            try? data.write(to: jsonURL, options: .atomic)
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: jsonURL.path)
+        }
+        // gambar yang sudah tidak ada di riwayat (dihapus / terbuang batas) ikut dihapus dari disk
+        for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where !keep.contains(name) {
+            try? fm.removeItem(at: dir.appendingPathComponent(name))
+        }
+    }
+
+    /// Isi riwayat yang tersimpan (terbaru di depan); gambar yang filenya hilang dilewati
+    func load(into h: History) {
+        guard let data = try? Data(contentsOf: jsonURL), let s = try? JSONDecoder().decode(Saved.self, from: data) else { return }
+        var clips: [LocalClip] = []
+        for it in s.items {
+            var img: Data?
+            if it.kind == "image" {
+                img = try? Data(contentsOf: imageURL(it.id))
+                if img == nil { continue }
+            }
+            clips.append(LocalClip(id: it.id, kind: it.kind, text: it.text, data: img, mime: it.mime, size: it.size,
+                                   from: it.from, time: it.time, serverID: nil, synced: it.synced))
+        }
+        h.load(clips, nextID: s.nextID)
+    }
+
+    /// Penyimpanan dimatikan / uninstall: hapus semua file riwayat
+    func wipe() {
+        work?.cancel()
+        work = nil
+        try? FileManager.default.removeItem(at: dir)
     }
 }
 
@@ -1945,6 +2044,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     lazy var lan = LANServer(clipboard: clipboard)
     let macName = computerName()
     let history = History()
+    /// Salinan riwayat di disk (Pengaturan → Umum → "Simpan riwayat di Mac"; dimatikan → hanya di memori)
+    lazy var historyStore = HistoryStore(dir: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("PasteLAN/History", isDirectory: true))
+    var historyPersist: Bool { d.bool(forKey: "historyPersist") }
     lazy var settings = SettingsWindow(app: self)
     /// Kotak cari di menu: teks polos tanpa bingkai (hanya ikon kaca pembesar + placeholder), setinggi satu baris menu
     let searchField = PlainTextField(frame: NSRect(x: 36, y: 3, width: 250, height: 18))
@@ -1966,7 +2069,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     var lanMode: Bool { d.string(forKey: "mode") == "lan" }
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        d.register(defaults: ["sharing": true, "autoSend": true, "saveImages": false, "mode": "server", "historyLimit": 15])
+        d.register(defaults: ["sharing": true, "autoSend": true, "saveImages": false, "mode": "server", "historyLimit": 15,
+                              "historyPersist": true])
         d.removeObject(forKey: "token") // link Wi-Fi lokal lama (v0.1.x, token di ?t=) tidak berlaku lagi
 
         item.autosaveName = "PasteLAN" // posisi ikon diingat
@@ -1985,6 +2089,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         clipboard.onChange = { [weak self] in self?.copiedOnMac() }
         history.limit = historyLimit
         history.onChange = { [weak self] in self?.historyChanged() }
+        if historyPersist { historyStore.load(into: history) } // sebelum sinkron mulai
         searchField.placeholderString = "Cari clip…"
         searchField.isBordered = false
         searchField.isBezeled = false
@@ -2156,6 +2261,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     func historyChanged() {
         if menuOpen { refreshHistoryItems() }
         settings.reloadClips()
+        if historyPersist { historyStore.saveSoon(history) }
+    }
+
+    /// Riwayat ditulis ke disk sebentar setelah berubah → pastikan tersimpan saat aplikasi ditutup
+    func applicationWillTerminate(_ n: Notification) {
+        if historyPersist { historyStore.save(history) }
+    }
+
+    func setHistoryPersist(_ on: Bool) {
+        d.set(on, forKey: "historyPersist")
+        if on { historyStore.save(history) } else { historyStore.wipe() }
     }
 
     /// Pertama kali dipakai: pengguna memilih sendiri apakah setiap copy di Mac langsung tersedia untuk HP
@@ -2766,6 +2882,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
 
     func finishUninstall() {
         lan.stop()
+        historyStore.wipe()
         Keychain.token = nil
         try? SMAppService.mainApp.unregister()
         if let id = Bundle.main.bundleIdentifier {
@@ -3134,6 +3251,7 @@ final class SettingsWindow: NSObject {
     private lazy var autoSwitch = Form.toggle(self, #selector(autoSendChanged(_:)))
     private lazy var imagesSwitch = Form.toggle(self, #selector(saveImagesChanged(_:)))
     private lazy var loginSwitch = Form.toggle(self, #selector(loginChanged(_:)))
+    private lazy var persistSwitch = Form.toggle(self, #selector(persistChanged(_:)))
     private lazy var limitPopup: NSPopUpButton = {
         let p = NSPopUpButton(frame: .zero, pullsDown: false)
         for n in AppDelegate.historyLimits {
@@ -3202,8 +3320,10 @@ final class SettingsWindow: NSObject {
                          imagesSwitch),
             ]),
             Form.section("Riwayat", [
-                Form.row("Jumlah clip yang diingat", "Riwayat Mac hanya di memori (hilang saat PasteLAN ditutup). " +
-                         "Clip terlama dibuang saat batas tercapai.", limitPopup),
+                Form.row("Jumlah clip yang diingat", "Clip terlama dibuang saat batas tercapai.", limitPopup),
+                Form.row("Simpan riwayat di Mac", "Riwayat tetap ada setelah PasteLAN / Mac di-restart (seperti CopyClip). " +
+                         "Disimpan hanya di Mac ini (folder Application Support, hanya bisa dibaca akun Anda). " +
+                         "Mati = hanya di memori, hilang saat PasteLAN ditutup.", persistSwitch),
             ]),
             Form.section("Sistem", [
                 Form.row("Buka saat login", "PasteLAN otomatis berjalan setiap Mac dinyalakan.", loginSwitch),
@@ -3218,6 +3338,7 @@ final class SettingsWindow: NSObject {
         autoSwitch.state = app.autoSend ? .on : .off
         imagesSwitch.state = app.d.bool(forKey: "saveImages") ? .on : .off
         loginSwitch.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        persistSwitch.state = app.historyPersist ? .on : .off
         if limitPopup.item(withTitle: "\(app.historyLimit) clip") == nil {
             limitPopup.addItem(withTitle: "\(app.historyLimit) clip")
             limitPopup.lastItem?.tag = app.historyLimit
@@ -3315,6 +3436,7 @@ final class SettingsWindow: NSObject {
     @objc func syncChanged(_ s: NSSwitch) { if (s.state == .on) != app.sharing { app.toggleSharing() } }
     @objc func autoSendChanged(_ s: NSSwitch) { if (s.state == .on) != app.autoSend { app.toggleAutoSend() } }
     @objc func saveImagesChanged(_ s: NSSwitch) { app.d.set(s.state == .on, forKey: "saveImages") }
+    @objc func persistChanged(_ s: NSSwitch) { app.setHistoryPersist(s.state == .on) }
     @objc func loginChanged(_ s: NSSwitch) {
         app.toggleLogin()
         reload()
