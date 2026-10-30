@@ -39,6 +39,10 @@ sebagai aplikasi. Opsi A tetap terdokumentasi di `../opsi-a-mac-app-plus-browser
       Pengaturan → Umum; gambar sebagai file, id item server tidak disimpan
 - [x] v1.8.0: "Sinkron" → **Autosync** (opsi "Kirim setiap copy otomatis" digabung); notifikasi PWA (Web Push,
       `server/push.go`) untuk kiriman manual ⇧ + klik dari Mac, potongan teks + tombol **Salin**; tombol Install PWA
+- [x] v1.9.0: **Dengarkan kiriman dari server** (saat autosync mati, mode server): Mac tetap long-poll tanpa mengirim
+      copy; kiriman HP / browser masuk riwayat (clipboard tidak ditimpa), titik di kanan atas ikon menu bar + titik
+      biru di baris clip sampai menu ditutup. Pengaturan → Umum / menu, default nyala
+- [ ] Uji "Dengarkan kiriman dari server" di Mac nyata (tampilan titik di menu bar terang / gelap)
 - [ ] Uji notifikasi di HP nyata: Android (tombol Salin) & iPhone ter-install (ketuk → Salin)
 - [ ] Uji di Mac & HP nyata: login, install PWA, kirim dua arah, cabut perangkat
 - [ ] Uji metode Wi-Fi lokal di Mac nyata & ganti-ganti metode

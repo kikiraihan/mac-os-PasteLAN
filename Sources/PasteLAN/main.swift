@@ -48,13 +48,16 @@ func symbol(_ name: String) -> NSImage? {
 /// tapi sedang menghubungkan / terputus, tanpa tanda = sinkron mati (clipboard manager saja)
 enum BarBadge { case none, on, waiting }
 
-func barIcon(_ name: String, badge: BarBadge = .none) -> NSImage? {
+/// `unread`: tanda di kanan ATAS (titik sedikit lebih besar, posisi badge notifikasi) = ada clip baru dari server yang
+/// belum dilihat (mendengarkan server saat autosync mati). Tanda autosync tetap di kanan bawah, jadi tidak bertabrakan;
+/// lagi pula tanda ini hanya muncul saat autosync mati (saat autosync aktif kiriman langsung masuk clipboard + ikon ✓).
+func barIcon(_ name: String, badge: BarBadge = .none, unread: Bool = false) -> NSImage? {
     guard let base = symbol(name)?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)) else {
         return nil
     }
     base.isTemplate = true
-    guard badge != .none else { return base }
-    let dot: CGFloat = 5.5
+    guard badge != .none || unread else { return base }
+    let dot: CGFloat = 5.5, big: CGFloat = 6.5
     let size = NSSize(width: base.size.width + 3.5, height: max(base.size.height, 16))
     let img = NSImage(size: size, flipped: false) { r in
         base.draw(in: NSRect(x: 0, y: (r.height - base.size.height) / 2, width: base.size.width, height: base.size.height))
@@ -62,10 +65,13 @@ func barIcon(_ name: String, badge: BarBadge = .none) -> NSImage? {
         NSColor.black.set() // gambar template: warna asli diabaikan, macOS mewarnai sesuai tema menu bar
         if badge == .on {
             NSBezierPath(ovalIn: rect).fill()
-        } else {
+        } else if badge == .waiting {
             let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 0.7, dy: 0.7))
             ring.lineWidth = 1.2
             ring.stroke()
+        }
+        if unread {
+            NSBezierPath(ovalIn: NSRect(x: r.width - big, y: r.height - big, width: big, height: big)).fill()
         }
         return true
     }
@@ -2067,6 +2073,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     var loggedIn: Bool { server.token != nil }
     /// Autosync aktif dan metodenya siap (Wi-Fi lokal, atau sudah login ke server)
     var syncActive: Bool { sharing && (lanMode || loggedIn) }
+    /// Dengarkan server (Pengaturan → Umum / menu): saat autosync mati, Mac tetap tersambung ke server (hanya menerima).
+    /// Kiriman dari HP / browser masuk riwayat Mac (tidak menimpa clipboard) dan ikon menu bar diberi tanda sampai menu dibuka.
+    /// Copy di Mac tetap tidak terkirim. Hanya mode server (di Wi-Fi lokal server kecil di Mac mati saat autosync mati).
+    var listen: Bool { d.bool(forKey: "listen") }
+    var listening: Bool { !sharing && listen && !lanMode && loggedIn }
+    /// id clip riwayat (History) yang masuk lewat "Dengarkan server" dan belum dilihat; dikosongkan saat menu ditutup
+    var unread = Set<Int>()
     /// Jumlah clip yang diingat di riwayat Mac
     var historyLimit: Int { max(5, d.integer(forKey: "historyLimit")) }
     static let historyLimits = [10, 15, 20, 30, 50, 100]
@@ -2075,7 +2088,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
 
     func applicationDidFinishLaunching(_ n: Notification) {
         d.register(defaults: ["sharing": true, "saveImages": false, "mode": "server", "historyLimit": 15,
-                              "historyPersist": true])
+                              "historyPersist": true, "listen": true])
         d.removeObject(forKey: "token") // link Wi-Fi lokal lama (v0.1.x, token di ?t=) tidak berlaku lagi
         // "Kirim setiap copy otomatis" (≤ v1.7) digabung ke autosync: yang dulu mematikannya → autosync mati
         // (copy di Mac tetap tidak terkirim otomatis; kirim satu clip lewat ⇧ + klik)
@@ -2138,13 +2151,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if active, lanMode {
             server.stop()
             lan.start()
-        } else if active {
+        } else if active || listening { // autosync, atau hanya mendengarkan (copy di Mac tidak dikirim, lihat push)
             lan.stop()
             if !server.running { server.start() }
         } else {
             server.stop()
             lan.stop()
         }
+        if !listening { unread.removeAll() } // autosync dinyalakan / dengarkan dimatikan → tanda clip baru hilang
         clipboard.startWatching() // riwayat Mac selalu dicatat (clipboard manager), juga saat sinkron mati
         updateIcon()
         settings.reload()
@@ -2177,10 +2191,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         // ikon tidak pernah diredupkan: sinkron mati tetap terlihat normal (clipboard manager tetap jalan)
         let connected = lanMode ? lan.running : server.state == .connected
         let badge: BarBadge = !syncActive ? .none : connected ? .on : .waiting
-        if flashTimer == nil { setBarImage(barIcon("paperclip", badge: badge)) }
+        if flashTimer == nil { setBarImage(barIcon("paperclip", badge: badge, unread: !unread.isEmpty)) }
         b.appearsDisabled = false
-        b.toolTip = "PasteLAN — " + (!syncActive ? "autosync mati, clipboard manager offline"
-                                                 : connected ? "autosync aktif" : "autosync aktif, menghubungkan…")
+        let news = unread.isEmpty ? "" : " · \(unread.count) clip baru dari server"
+        b.toolTip = "PasteLAN — " + (syncActive ? (connected ? "autosync aktif" : "autosync aktif, menghubungkan…")
+                                     : listening ? (connected ? "autosync mati, mendengarkan server" : "autosync mati, menghubungkan ke server…")
+                                     : "autosync mati, clipboard manager offline") + news
         settings.reloadStatus()
     }
 
@@ -2235,6 +2251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
 
     /// Item baru dari perangkat lain → langsung masuk clipboard Mac (dan riwayat)
     func receive(_ c: Clip) {
+        guard syncActive else { return heard(c) }
         if c.kind == "text", let text = c.text {
             clipboard.writeText(text)
             history.add(kind: "text", text: text, data: nil, mime: nil, size: c.size, from: c.from, synced: true, serverID: c.id)
@@ -2248,6 +2265,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                 self.flash()
             }
         }
+    }
+
+    /// Dengarkan server (autosync mati): item baru dari perangkat lain hanya masuk riwayat (paling atas), clipboard Mac
+    /// tidak ditimpa, dan ikon menu bar diberi tanda. Isi gambar diambil saat clip itu dipilih (seperti `seen`).
+    func heard(_ c: Clip) {
+        guard listening else { return }
+        let clip = history.add(kind: c.kind, text: c.text, data: nil, mime: c.mime, size: c.size, from: c.from,
+                               synced: true, serverID: c.id)
+        unread.insert(clip.id)
+        if menuOpen { refreshHistoryItems() }
+        updateIcon()
     }
 
     /// Item yang sudah ada di server saat Mac (baru) tersambung: hanya masuk riwayat, tidak ditempel ke clipboard.
@@ -2266,6 +2294,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     }
 
     func historyChanged() {
+        // clip baru yang dihapus / terbuang dari riwayat sebelum dilihat → tandanya ikut hilang
+        if !unread.isEmpty {
+            let n = unread.count
+            unread.formIntersection(history.items.map { $0.id })
+            if unread.count != n { updateIcon() }
+        }
         if menuOpen { refreshHistoryItems() }
         settings.reloadClips()
         if historyPersist { historyStore.saveSoon(history) }
@@ -2287,7 +2321,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         a.messageText = "Nyalakan autosync?"
         a.informativeText = "Autosync: semua yang Anda copy (⌘C) di Mac otomatis muncul di HP / browser yang login ke server " +
             "PasteLAN, dan kiriman dari HP otomatis masuk ke clipboard Mac.\n\n" +
-            "Kalau tidak, PasteLAN jadi clipboard manager offline biasa: semua copy hanya dicatat di riwayat Mac. " +
+            "Kalau tidak, PasteLAN jadi clipboard manager biasa: semua copy hanya dicatat di riwayat Mac. " +
+            "Kiriman dari HP tetap masuk riwayat Mac dan ditandai titik di ikon menu bar (\"Dengarkan kiriman dari server\", " +
+            "bisa dimatikan). " +
             "Satu clip tetap bisa dikirim kapan saja: tahan ⇧ (Shift) lalu klik clip itu di menu. " +
             "Bisa diubah kapan saja di menu atau Pengaturan."
         a.addButton(withTitle: "Nyalakan autosync")
@@ -2431,11 +2467,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     var statusText: String {
         let host = serverURL?.host ?? "server"
         guard loggedIn else { return "Belum login ke server PasteLAN" }
-        guard sharing else { return "Autosync mati · clipboard manager offline" }
+        guard sharing || listening else { return "Autosync mati · clipboard manager offline" }
         switch server.state {
         case .loggedOut: return "Belum login ke server PasteLAN"
         case .connecting: return "Menghubungkan ke \(host)…"
-        case .connected: return "Terhubung ke \(host)"
+        case .connected: return listening ? "Autosync mati · mendengarkan \(host)" : "Terhubung ke \(host)"
         case .offline(let e): return "Tidak bisa menghubungi \(host): \(e.count > 50 ? String(e.prefix(50)) + "…" : e)"
         }
     }
@@ -2457,6 +2493,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             (lanMode ? "Mati: clipboard manager offline biasa (server Wi-Fi lokal di Mac ikut mati). "
                      : "Mati: clipboard manager offline biasa; tahan ⇧ lalu klik sebuah clip untuk mengirimnya. ") +
             "Saat dinyalakan lagi, hanya copy baru yang dikirim."
+        if !lanMode, !sharing {
+            // hanya relevan saat autosync mati (autosync sudah menerima sendiri)
+            let ear = add("Dengarkan kiriman dari server", #selector(toggleListen), on: listen, enabled: loggedIn)
+            ear.image = symbol("ear")
+            ear.toolTip = "Nyala: Mac tetap tersambung ke server tanpa mengirim copy di Mac. Kiriman dari HP / browser " +
+                "masuk riwayat (clipboard Mac tidak ditimpa) dan ikon menu bar diberi titik di kanan atas sampai menu dibuka."
+        }
         let manager = add("Clipboard manager", #selector(openClipboardManager))
         manager.image = symbol("list.bullet.rectangle")
         let pref = add("Pengaturan…", #selector(openSettings))
@@ -2468,7 +2511,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     }
 
     func menuWillOpen(_ m: NSMenu) { menuOpen = true }
-    func menuDidClose(_ m: NSMenu) { menuOpen = false }
+    func menuDidClose(_ m: NSMenu) {
+        menuOpen = false
+        // menu sudah dibuka = clip baru sudah dilihat → tanda di ikon & di baris clip hilang
+        if !unread.isEmpty {
+            unread.removeAll()
+            updateIcon()
+        }
+    }
 
     /// Pencarian di menu: daftar clip disaring setiap huruf diketik (menu tetap terbuka)
     func controlTextDidChange(_ n: Notification) {
@@ -2527,7 +2577,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             let it = NSMenuItem(title: c.title, action: #selector(recopy(_:)), keyEquivalent: n < 10 ? "\(n)" : "")
             it.target = self
             it.representedObject = c.id
-            it.toolTip = "Dari \(c.source)" + (c.pending ? " · belum dikirim ke server / HP" : "") +
+            let fresh = unread.contains(c.id)
+            if fresh { it.image = unreadDot } // clip baru dari server (Dengarkan server) yang belum dilihat
+            it.toolTip = "Dari \(c.source)" + (fresh ? " · baru" : "") + (c.pending ? " · belum dikirim ke server / HP" : "") +
                 " · klik untuk menyalin ke clipboard Mac, tahan ⇧ untuk mengirim, tahan ⌥ untuk menghapus"
             // tahan ⌥ → baris ini berganti jadi "Hapus" (alternate item: harus tepat setelah item utamanya,
             // tombol pintas sama dengan modifier berbeda → ⌥⌘0–⌥⌘9 menghapus)
@@ -2585,7 +2637,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     func addServerSection() {
         let st = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
         st.isEnabled = false
-        st.image = statusDot(sharing && loggedIn && server.state == .connected)
+        st.image = statusDot((sharing || listening) && loggedIn && server.state == .connected)
         menu.addItem(st)
         if loggedIn, serverURL != nil {
             add("Tambah HP (scan QR)…", #selector(pairPhone)).image = symbol("qrcode.viewfinder")
@@ -2652,6 +2704,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         }
     }
 
+    /// Titik warna aksen di depan clip baru dari server yang belum dilihat
+    lazy var unreadDot: NSImage = NSImage(size: NSSize(width: 10, height: 10), flipped: false) { r in
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(ovalIn: r.insetBy(dx: 2, dy: 2)).fill()
+        return true
+    }
+
     @discardableResult
     func add(_ title: String, _ action: Selector, on: Bool? = nil, enabled: Bool = true, to target: NSMenu? = nil) -> NSMenuItem {
         let it = NSMenuItem(title: title, action: action, keyEquivalent: "")
@@ -2700,6 +2759,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     /// Autosync dinyalakan lagi → hanya copy berikutnya yang dikirim; riwayat lama bisa dikirim dari Clipboard manager
     @objc func toggleSharing() {
         d.set(!sharing, forKey: "sharing")
+        applySharing()
+    }
+    /// Dengarkan server saat autosync mati (lihat `listening`)
+    @objc func toggleListen() {
+        d.set(!listen, forKey: "listen")
         applySharing()
     }
     @objc func openSettings() { settings.show(.general) }
@@ -2848,6 +2912,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         dari HP otomatis masuk. Kalau dimatikan, PasteLAN jadi clipboard manager offline biasa: semua copy tetap masuk \
         riwayat Mac, tapi tidak dikirim; satu clip masih bisa dikirim dengan ⇧ + klik. Saat dinyalakan lagi hanya copy \
         baru yang dikirim; clip lama bisa dicentang lalu dikirim dari menu → "Clipboard manager".
+
+        Dengarkan kiriman dari server (mode server, saat autosync mati): Mac tetap menerima kiriman dari HP / browser \
+        tanpa mengirim copy di Mac. Kiriman itu masuk riwayat (clipboard Mac tidak ditimpa), ikon menu bar diberi titik \
+        di kanan atas, dan clip-nya ditandai titik biru di menu sampai menu ditutup. Klik clip itu untuk menyalinnya.
 
         Tanpa server: menu → Pengaturan → Koneksi → "Wi-Fi lokal". Mac dan HP harus di Wi-Fi yang sama (atau Mac memakai \
         hotspot HP); scan QR code di menu → "Tambah HP". Isi dienkripsi dengan kunci di QR code. Wi-Fi kantor / kampus / \
@@ -3247,6 +3315,7 @@ final class SettingsWindow: NSObject {
     // kontrol tab Umum (dibuat sekali, statusnya diperbarui di tempat supaya animasi NSSwitch tidak terputus)
     private lazy var syncTitle = Form.label("", weight: .medium)
     private lazy var syncSwitch = Form.toggle(self, #selector(syncChanged(_:)))
+    private lazy var listenSwitch = Form.toggle(self, #selector(listenChanged(_:)))
     private lazy var imagesSwitch = Form.toggle(self, #selector(saveImagesChanged(_:)))
     private lazy var loginSwitch = Form.toggle(self, #selector(loginChanged(_:)))
     private lazy var persistSwitch = Form.toggle(self, #selector(persistChanged(_:)))
@@ -3314,6 +3383,9 @@ final class SettingsWindow: NSObject {
                          "Mati = clipboard manager offline biasa; semua copy tetap masuk riwayat, dan satu clip masih bisa " +
                          "dikirim dengan ⇧ + klik di menu (mode server). Saat dinyalakan lagi hanya copy baru yang dikirim; clip lama bisa " +
                          "dikirim dari tab Clipboard.", syncSwitch),
+                Form.row("Dengarkan kiriman dari server", "Saat autosync mati (mode server): Mac tetap tersambung ke server " +
+                         "tanpa mengirim copy di Mac. Kiriman dari HP / browser masuk riwayat (clipboard Mac tidak ditimpa) dan " +
+                         "ikon menu bar diberi titik di kanan atas sampai menu dibuka.", listenSwitch),
                 Form.row("Simpan gambar dari HP ke Unduhan", "Selain masuk clipboard Mac, gambar yang diterima disimpan di folder Unduhan.",
                          imagesSwitch),
             ]),
@@ -3333,6 +3405,8 @@ final class SettingsWindow: NSObject {
         guard window != nil else { return }
         syncTitle.stringValue = app.lanMode ? "Autosync dengan HP (Wi-Fi lokal)" : "Autosync dengan server & browser"
         syncSwitch.state = app.sharing ? .on : .off
+        listenSwitch.state = app.listen ? .on : .off
+        listenSwitch.isEnabled = !app.lanMode && !app.sharing // autosync sudah menerima sendiri; Wi-Fi lokal tidak didukung
         imagesSwitch.state = app.d.bool(forKey: "saveImages") ? .on : .off
         loginSwitch.state = SMAppService.mainApp.status == .enabled ? .on : .off
         persistSwitch.state = app.historyPersist ? .on : .off
@@ -3343,7 +3417,7 @@ final class SettingsWindow: NSObject {
         limitPopup.selectItem(withTag: app.historyLimit)
 
         // Koneksi & Tentang dibangun ulang hanya kalau isinya berubah
-        let flags: [Bool] = [app.lanMode, app.sharing, app.loggedIn, app.updater.hasUpdate, app.lan.shareURL != nil]
+        let flags: [Bool] = [app.lanMode, app.sharing, app.listening, app.loggedIn, app.updater.hasUpdate, app.lan.shareURL != nil]
         let sig = flags.map { $0 ? "1" : "0" }.joined() + connectionLine + (app.serverURL?.absoluteString ?? "")
         if sig != signature {
             signature = sig
@@ -3355,7 +3429,7 @@ final class SettingsWindow: NSObject {
 
     private var connected: Bool {
         app.lanMode ? app.sharing && app.lan.running && app.lan.shareURL != nil
-                    : app.sharing && app.loggedIn && app.server.state == .connected
+                    : (app.sharing || app.listening) && app.loggedIn && app.server.state == .connected
     }
 
     private var connectionLine: String {
@@ -3431,6 +3505,7 @@ final class SettingsWindow: NSObject {
     }
 
     @objc func syncChanged(_ s: NSSwitch) { if (s.state == .on) != app.sharing { app.toggleSharing() } }
+    @objc func listenChanged(_ s: NSSwitch) { if (s.state == .on) != app.listen { app.toggleListen() } }
     @objc func saveImagesChanged(_ s: NSSwitch) { app.d.set(s.state == .on, forKey: "saveImages") }
     @objc func persistChanged(_ s: NSSwitch) { app.setHistoryPersist(s.state == .on) }
     @objc func loginChanged(_ s: NSSwitch) {
