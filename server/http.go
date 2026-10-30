@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -21,6 +22,7 @@ type app struct {
 	auth     *auth
 	store    *store
 	settings *settingsStore
+	push     *pusher // nil = notifikasi push nonaktif (kunci VAPID gagal dibuat / dibaca)
 }
 
 func newApp(password, adminPassword, dataDir string) (*app, error) {
@@ -32,7 +34,12 @@ func newApp(password, adminPassword, dataDir string) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &app{auth: a, store: newStore(st.get().limits()), settings: st}, nil
+	p, err := loadPusher(filepath.Join(dataDir, "push-key.pem"), env("PASTELAN_PUSH_SUBJECT", defaultPushSubject))
+	if err != nil {
+		log.Printf("notifikasi push nonaktif: %v", err)
+		p = nil
+	}
+	return &app{auth: a, store: newStore(st.get().limits()), settings: st, push: p}, nil
 }
 
 func (a *app) routes(web fs.FS) http.Handler {
@@ -52,6 +59,9 @@ func (a *app) routes(web fs.FS) http.Handler {
 	mux.HandleFunc("POST /api/text", a.authed(a.postText))
 	mux.HandleFunc("POST /api/image", a.authed(a.postImage))
 	mux.HandleFunc("GET /api/image/{id}", a.authed(a.getImage))
+	mux.HandleFunc("GET /api/push/key", a.authed(a.pushOn(a.pushKey)))
+	mux.HandleFunc("POST /api/push/subscribe", a.authed(a.pushOn(a.pushSubscribe)))
+	mux.HandleFunc("DELETE /api/push/subscribe", a.authed(a.pushOn(a.pushUnsubscribe)))
 	mux.HandleFunc("GET /api/devices", a.authed(a.devices))
 	mux.HandleFunc("DELETE /api/devices/{id}", a.authed(a.revokeDevice))
 	a.adminRoutes(mux)
@@ -265,6 +275,9 @@ func (a *app) postText(w http.ResponseWriter, r *http.Request, d *device) {
 		return
 	}
 	it := a.store.add(&item{Kind: "text", Text: string(b), Size: len(b), From: d.Name, Device: d.ID})
+	if r.URL.Query().Get("notify") == "1" {
+		a.notifyDevices(it, d.ID)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": it.ID})
 }
 
@@ -295,6 +308,9 @@ func (a *app) postImage(w http.ResponseWriter, r *http.Request, d *device) {
 		return
 	}
 	it := a.store.add(&item{Kind: "image", Mime: mime, Size: len(b), From: d.Name, Device: d.ID, data: b})
+	if r.URL.Query().Get("notify") == "1" {
+		a.notifyDevices(it, d.ID)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": it.ID})
 }
 
@@ -320,10 +336,11 @@ func (a *app) devices(w http.ResponseWriter, r *http.Request, d *device) {
 		Created  int64  `json:"created"`
 		LastSeen int64  `json:"lastSeen"`
 		Current  bool   `json:"current"`
+		Push     bool   `json:"push"`
 	}
 	list := []out{}
 	for _, x := range a.auth.list() {
-		list = append(list, out{x.ID, x.Name, x.Kind, x.Created.UnixMilli(), x.LastSeen.UnixMilli(), x.ID == d.ID})
+		list = append(list, out{x.ID, x.Name, x.Kind, x.Created.UnixMilli(), x.LastSeen.UnixMilli(), x.ID == d.ID, x.Push != nil})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"devices": list})
 }

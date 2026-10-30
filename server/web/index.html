@@ -28,6 +28,13 @@
   </form>
 
   <div id="app" hidden>
+    <div id="notifCard" class="card notice" hidden>
+      <div id="notifText"></div>
+      <div class="row">
+        <button id="notifEnable" class="grow">Aktifkan notifikasi</button>
+        <button id="notifLater" class="ghost">Nanti</button>
+      </div>
+    </div>
     <div class="card">
       <textarea id="input" placeholder="Tempel teks di sini, lalu kirim…"></textarea>
       <div class="row">
@@ -43,6 +50,11 @@
     <div id="list"></div>
     <details id="settings" class="card">
       <summary>Pengaturan</summary>
+      <h3>Aplikasi & notifikasi</h3>
+      <p id="installHint" class="hint"></p>
+      <div class="row"><button id="install" class="ghost" hidden>Install PasteLAN</button></div>
+      <p id="notifHint" class="hint"></p>
+      <div class="row"><button id="notifBtn" class="ghost" hidden>Aktifkan notifikasi</button></div>
       <h3>Perangkat yang login</h3>
       <div id="devices"></div>
       <div class="row">

@@ -5,6 +5,7 @@
   const MAX_BYTES = 30 * 1024 * 1024;
   let maxItems = 20; // dari server (diatur di halaman admin)
   let after = 0, session = '', rev = -1, me = '', polling = false, ctrl = null;
+  let pendingCopy = 0, notifChecked = false; // id clip dari notifikasi yang harus disalin begitu muncul
 
   function toast(msg) {
     const t = $('toast');
@@ -58,6 +59,7 @@
   const KINDS = { mac: 'Mac (menu bar)', hp: 'HP', browser: 'Browser' };
   function showLogin() {
     polling = false;
+    notifChecked = false;
     if (ctrl) ctrl.abort();
     clearList();
     $('app').hidden = true;
@@ -148,6 +150,8 @@
         for (const it of j.items) { add(it); after = Math.max(after, it.id); }
         if (j.ids) syncIds(j.ids);
         showEmpty();
+        if (pendingCopy && j.ids && !j.ids.includes(pendingCopy)) { pendingCopy = 0; toast('Clip itu sudah tidak ada di server'); }
+        if (!notifChecked) { notifChecked = true; updateNotif(); }
       } catch (e) {
         if (!polling) return;
         if (e.name !== 'AbortError') { setStatus('off', 'Terputus, mencoba lagi…'); await sleep(3000); }
@@ -172,6 +176,7 @@
     if (it.kind === 'text') {
       const t = el('div', 'txt', it.text);
       card.append(t);
+      card.copy = auto => copyText(it.text, auto);
       row.append(button('Salin', 'grow', () => copyText(it.text)));
       if (it.text.length > 300 || it.text.split('\n').length > 6) {
         row.append(button('Selengkapnya', 'ghost', b => {
@@ -191,13 +196,15 @@
       if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) row.append(copy);
       row.append(save);
       // gambar diambil lewat fetch (butuh header X-PasteLAN) lalu ditampilkan sebagai blob:
-      api(`/api/image/${it.id}?s=${encodeURIComponent(session)}`, {}, true)
+      const ready = api(`/api/image/${it.id}?s=${encodeURIComponent(session)}`, {}, true)
         .then(r => r.blob())
         .then(b => {
           card.blob = b;
           card.blobURL = img.src = save.href = URL.createObjectURL(b);
           copy.disabled = false;
-        }).catch(() => { img.alt = 'Gambar gagal dimuat'; });
+          return b;
+        }).catch(() => { img.alt = 'Gambar gagal dimuat'; return null; });
+      card.copy = async auto => copyImage(await ready, auto);
     }
     // hapus item ini dari server → hilang juga di semua perangkat
     row.append(button('Hapus', 'ghost danger del', async b => {
@@ -212,10 +219,34 @@
     list.prepend(card);
     while (list.children.length > maxItems) removeCard(list.lastChild);
     filter();
+    if (it.id === pendingCopy) copyFromCard(card);
   }
 
-  async function copyText(text) {
-    try { await navigator.clipboard.writeText(text); return toast('Tersalin ✓'); } catch (e) {}
+  // ---------- salin dari notifikasi ----------
+  // Notifikasi diketuk → service worker membuka halaman ini (#copy=<id>) atau mengirim pesan; clip disalin begitu ada.
+  function copyFromNotif(id) {
+    if (!id) return;
+    pendingCopy = id;
+    const card = [...$('list').children].find(c => c.itemId === id);
+    if (card) copyFromCard(card);
+  }
+  async function copyFromCard(card) {
+    pendingCopy = 0;
+    if ($('search').value) { $('search').value = ''; filter(); }
+    card.scrollIntoView({ block: 'center' });
+    card.classList.add('flash');
+    setTimeout(() => card.classList.remove('flash'), 3000);
+    // tanpa ketukan di halaman, beberapa browser (Safari iPhone) menolak menulis clipboard → minta ketuk "Salin"
+    if (!card.copy || !await card.copy(true)) toast('Ketuk "Salin" untuk menyalin');
+  }
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', e => copyFromNotif(Number(e.data && e.data.copy) || 0));
+  }
+
+  // auto = disalin otomatis (dari notifikasi): gagal → false tanpa cadangan execCommand / pesan gagal
+  async function copyText(text, auto) {
+    try { await navigator.clipboard.writeText(text); toast('Tersalin ✓'); return true; } catch (e) {}
+    if (auto) return false;
     // cadangan untuk browser lama
     const ta = el('textarea');
     ta.value = text;
@@ -226,11 +257,12 @@
     try { ok = document.execCommand('copy'); } catch (e) {}
     ta.remove();
     toast(ok ? 'Tersalin ✓' : 'Gagal menyalin. Tekan lama teksnya untuk menyalin manual.');
+    return ok;
   }
 
   // clipboard browser hanya menerima PNG → gambar lain diubah dulu lewat canvas
-  async function copyImage(blob) {
-    if (!blob) return;
+  async function copyImage(blob, auto) {
+    if (!blob) return false;
     try {
       let png = blob;
       if (blob.type !== 'image/png') {
@@ -242,7 +274,11 @@
       }
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
       toast('Gambar tersalin ✓');
-    } catch (e) { toast('Gagal menyalin gambar. Tekan lama gambarnya untuk menyalin.'); }
+      return true;
+    } catch (e) {
+      if (!auto) toast('Gagal menyalin gambar. Tekan lama gambarnya untuk menyalin.');
+      return false;
+    }
   }
 
   // ---------- mengirim ----------
@@ -288,7 +324,8 @@
       for (const d of j.devices) {
         const row = el('div', 'dev');
         const info = el('span', '', d.name + (d.current ? ' (perangkat ini)' : ''));
-        info.append(el('small', '', (KINDS[d.kind] ? KINDS[d.kind] + ' · ' : '') + 'Terakhir aktif ' + new Date(d.lastSeen).toLocaleString('id-ID')));
+        info.append(el('small', '', (KINDS[d.kind] ? KINDS[d.kind] + ' · ' : '') + (d.push ? 'Notifikasi aktif · ' : '') +
+          'Terakhir aktif ' + new Date(d.lastSeen).toLocaleString('id-ID')));
         row.append(info);
         if (!d.current) {
           row.append(button('Cabut', 'ghost danger', async () => {
@@ -309,6 +346,7 @@
   $('logout').onclick = async () => {
     if (!confirm('Keluar dari perangkat ini? Perlu link setup / QR / password untuk masuk lagi.')) return;
     try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
+    try { const sub = await pushSubscription(); if (sub) await sub.unsubscribe(); } catch (e) {}
     showLogin();
   };
 
@@ -334,7 +372,124 @@
     }
   }
 
+  // ---------- install (PWA) ----------
+  const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  let installEvt = null; // Chrome / Edge / Android: dialog install bawaan browser
+  window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; updateInstall(); });
+  window.addEventListener('appinstalled', () => { installEvt = null; updateInstall(); toast('PasteLAN ter-install ✓'); });
+  function updateInstall() {
+    $('install').hidden = !installEvt || standalone();
+    $('installHint').textContent = standalone() ? 'PasteLAN sudah ter-install dan terbuka sebagai aplikasi.'
+      : installEvt ? 'Install PasteLAN supaya terbuka seperti aplikasi biasa (ikon di layar utama / dock).'
+      : isIOS() ? 'Install di iPhone / iPad: buka di Safari → tombol Bagikan → "Tambahkan ke Layar Utama".'
+      : 'Install lewat menu browser → "Install aplikasi" / "Tambahkan ke layar utama".';
+  }
+  $('install').onclick = async () => {
+    if (!installEvt) return;
+    installEvt.prompt();
+    try { await installEvt.userChoice; } catch (e) {}
+    installEvt = null;
+    updateInstall();
+  };
+
+  // ---------- notifikasi push ----------
+  // Hanya untuk kiriman manual dari Mac (⇧ + klik di menu); clip dari autosync tidak memunculkan notifikasi.
+  const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const b64uBytes = s => {
+    const b = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - s.length % 4) % 4));
+    return Uint8Array.from(b, c => c.charCodeAt(0));
+  };
+  async function pushSubscription() {
+    if (!pushSupported()) return null;
+    const reg = await navigator.serviceWorker.ready;
+    return reg.pushManager.getSubscription();
+  }
+  // langganan dibuat dengan kunci server yang lain (kunci di server berganti) → tidak berlaku lagi
+  function sameKey(sub, key) {
+    const k = sub.options && sub.options.applicationServerKey;
+    if (!k) return true;
+    const a = new Uint8Array(k), b = b64uBytes(key);
+    return a.length === b.length && a.every((x, i) => x === b[i]);
+  }
+  const saveSub = sub => api('/api/push/subscribe', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub.toJSON())
+  });
+  let pushOn = false;
+  function laterDismissed() { try { return localStorage.getItem('pastelan-notif-later') === '1'; } catch (e) { return false; } }
+  async function updateNotif() {
+    updateInstall();
+    const btn = $('notifBtn'), hint = $('notifHint'), card = $('notifCard');
+    btn.hidden = card.hidden = true;
+    pushOn = false;
+    if (!pushSupported()) {
+      if (isIOS() && !standalone()) {
+        hint.textContent = 'Notifikasi di iPhone / iPad bisa setelah PasteLAN di-install ke Layar Utama (iOS 16.4+) lalu dibuka dari ikonnya.';
+        $('notifText').textContent = 'Mau notifikasi saat Mac mengirim clip? Install PasteLAN dulu: Safari → Bagikan → "Tambahkan ke Layar Utama", lalu buka dari ikonnya.';
+        $('notifEnable').hidden = true;
+        card.hidden = laterDismissed();
+      } else hint.textContent = 'Browser ini tidak mendukung notifikasi push.';
+      return;
+    }
+    if (Notification.permission === 'denied') {
+      hint.textContent = 'Notifikasi diblokir. Izinkan lewat pengaturan situs di browser / HP, lalu muat ulang halaman.';
+      return;
+    }
+    let sub, j;
+    try {
+      sub = await pushSubscription();
+      j = await api('/api/push/key');
+      if (sub && !sameKey(sub, j.key)) { await sub.unsubscribe().catch(() => {}); sub = null; }
+      // langganan masih ada di browser tapi server belum tahu (mis. login ulang) → daftarkan lagi
+      if (sub && !j.subscribed && Notification.permission === 'granted') { await saveSub(sub); j.subscribed = true; }
+    } catch (e) { hint.textContent = 'Notifikasi belum tersedia: ' + e.message; return; }
+    pushOn = !!sub && j.subscribed;
+    btn.hidden = false;
+    btn.textContent = pushOn ? 'Matikan notifikasi' : 'Aktifkan notifikasi';
+    hint.textContent = pushOn
+      ? 'Aktif: notifikasi muncul saat Mac mengirim clip secara manual (⇧ + klik di menu PasteLAN). Ketuk "Salin" di notifikasi untuk menyalin.'
+      : 'Notifikasi saat Mac mengirim clip secara manual (⇧ + klik di menu PasteLAN), dengan potongan teks dan tombol "Salin". Clip dari autosync tidak memunculkan notifikasi.';
+    $('notifText').textContent = 'Aktifkan notifikasi supaya clip yang dikirim manual dari Mac (⇧ + klik di menu PasteLAN) langsung muncul, lengkap dengan tombol "Salin".';
+    $('notifEnable').hidden = false;
+    card.hidden = pushOn || Notification.permission !== 'default' || laterDismissed();
+  }
+  async function enablePush() {
+    try {
+      // izin harus diminta langsung dari ketukan pengguna
+      if (await Notification.requestPermission() !== 'granted') { toast('Izin notifikasi tidak diberikan'); return; }
+      const reg = await navigator.serviceWorker.ready;
+      const j = await api('/api/push/key');
+      let sub = await reg.pushManager.getSubscription();
+      if (sub && !sameKey(sub, j.key)) { await sub.unsubscribe(); sub = null; }
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uBytes(j.key) });
+      await saveSub(sub);
+      toast('Notifikasi aktif ✓');
+    } catch (e) { toast('Gagal mengaktifkan notifikasi: ' + e.message); }
+    finally { updateNotif(); }
+  }
+  async function disablePush() {
+    try {
+      const sub = await pushSubscription();
+      if (sub) await sub.unsubscribe();
+      await api('/api/push/subscribe', { method: 'DELETE' });
+      toast('Notifikasi dimatikan');
+    } catch (e) { toast(e.message); }
+    finally { updateNotif(); }
+  }
+  $('notifBtn').onclick = () => (pushOn ? disablePush() : enablePush());
+  $('notifEnable').onclick = enablePush;
+  $('notifLater').onclick = () => {
+    try { localStorage.setItem('pastelan-notif-later', '1'); } catch (e) {}
+    $('notifCard').hidden = true;
+  };
+
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  // dibuka dari notifikasi (service worker membuka /#copy=<id>)
+  {
+    const id = Number(new URLSearchParams(location.hash.slice(1)).get('copy')) || 0;
+    if (id) { pendingCopy = id; history.replaceState(null, '', location.pathname); }
+  }
+  updateInstall();
   // belum login → request pertama dijawab 401 → form login muncul
   claimFromQR().then(ok => { if (ok) showApp(); });
 })();

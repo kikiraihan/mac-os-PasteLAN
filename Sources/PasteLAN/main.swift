@@ -736,9 +736,14 @@ final class PasteServer {
 
     // MARK: mengirim
 
-    /// done(id item di server) setelah terkirim, atau done(nil) kalau gagal
-    func sendText(_ s: String, _ done: ((Int?) -> Void)? = nil) { post("/api/text", Data(s.utf8), "text/plain; charset=utf-8", done) }
-    func sendImage(_ d: Data, _ done: ((Int?) -> Void)? = nil) { post("/api/image", d, "application/octet-stream", done) } // jenis gambar dicek server dari isinya
+    /// done(id item di server) setelah terkirim, atau done(nil) kalau gagal.
+    /// notify: minta server memunculkan notifikasi di HP (PWA) — hanya untuk kiriman manual, bukan autosync.
+    func sendText(_ s: String, notify: Bool = false, _ done: ((Int?) -> Void)? = nil) {
+        post("/api/text" + (notify ? "?notify=1" : ""), Data(s.utf8), "text/plain; charset=utf-8", done)
+    }
+    func sendImage(_ d: Data, notify: Bool = false, _ done: ((Int?) -> Void)? = nil) { // jenis gambar dicek server dari isinya
+        post("/api/image" + (notify ? "?notify=1" : ""), d, "application/octet-stream", done)
+    }
 
     private func post(_ path: String, _ body: Data, _ type: String, _ done: ((Int?) -> Void)?) {
         send(request("POST", path, body: body, type: type)) { status, data, _ in
@@ -2203,8 +2208,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
 
     /// Kirim clip dari riwayat Mac ke server / HP. false kalau tidak bisa (autosync mati, atau gambar tanpa isi).
     /// `once`: kiriman manual satu clip, boleh juga saat autosync mati (lihat canSendOne).
+    /// `notify`: HP yang mengaktifkan notifikasi PasteLAN mendapat notifikasi dengan tombol "Salin" (mode server).
     @discardableResult
-    func push(_ c: LocalClip, once: Bool = false) -> Bool {
+    func push(_ c: LocalClip, once: Bool = false, notify: Bool = false) -> Bool {
         guard once ? canSendOne : syncActive else { return false }
         let content: PasteContent
         if let text = c.text { content = PasteContent(kind: "text", text: text, data: nil, mime: nil) }
@@ -2222,7 +2228,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             c.serverID = id
             self?.history.changed()
         }
-        if let text = content.text { server.sendText(text, done) } else if let data = content.data { server.sendImage(data, done) }
+        if let text = content.text { server.sendText(text, notify: notify, done) }
+        else if let data = content.data { server.sendImage(data, notify: notify, done) }
         return true
     }
 
@@ -2722,10 +2729,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         history.bump(id)
     }
     /// ⌥ + klik (atau ⌥⌘0–9): hapus satu clip dari riwayat Mac, tanpa konfirmasi; bisa diurungkan dari menu
-    /// ⇧ + klik: kirim satu clip ke server / HP (di mode server juga saat autosync mati)
+    /// ⇧ + klik: kirim satu clip ke server / HP (di mode server juga saat autosync mati), dengan notifikasi di HP
     @objc func sendClip(_ s: NSMenuItem) {
         guard let id = s.representedObject as? Int, let c = history.clip(id) else { return }
-        if push(c, once: true) { return flash() }
+        if push(c, once: true, notify: true) { return flash() }
         let a = NSAlert()
         a.messageText = "Clip tidak terkirim"
         if !canSendOne {
@@ -2832,7 +2839,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         Riwayat: klik salah satu clip di bagian atas menu (atau tekan ⌘0–⌘9 saat menu terbuka) untuk menyalinnya \
         lagi ke clipboard Mac. Klik kotak "Cari clip…" di menu untuk mencari. \
         Tahan ⇧ (Shift) lalu klik sebuah clip untuk mengirim clip itu saja ke server / HP (di mode server juga saat \
-        autosync mati). \
+        autosync mati); HP yang mengaktifkan notifikasi di halaman PasteLAN mendapat notifikasi dengan tombol "Salin". \
         Tahan ⌥ (Option) lalu klik sebuah clip (atau ⌥⌘0–⌥⌘9) untuk menghapusnya dari riwayat Mac; \
         "Urungkan hapus" di menu mengembalikannya. Jumlah clip yang diingat diatur di \
         Pengaturan → Umum.

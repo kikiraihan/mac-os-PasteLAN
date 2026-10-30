@@ -10,7 +10,8 @@ halaman web / PWA ikut di dalamnya. Butuh ±20–40 MB RAM.
 | `PASTELAN_ADMIN_PASSWORD` | ✅¹ | – | Password halaman admin (`/admin`), **minimal 12 karakter**, acak: `openssl rand -base64 24`. Kosong → admin nonaktif |
 | `PASTELAN_PASSWORD` | ✅¹ | – | Opsional: password bersama untuk login perangkat (min. 12, beda dari password admin). Bisa juga dibuat / dimatikan di admin |
 | `PASTELAN_ADDR` | | `127.0.0.1:8080` | Alamat dengar. Biarkan lokal; HTTPS lewat reverse proxy |
-| `PASTELAN_DATA` | | `data` | Folder `devices.json` (daftar perangkat + **hash** token) dan `settings.json` (pengaturan admin); bukan isi clipboard |
+| `PASTELAN_DATA` | | `data` | Folder `devices.json` (daftar perangkat + **hash** token + langganan notifikasi), `settings.json` (pengaturan admin) dan `push-key.pem` (kunci VAPID notifikasi, dibuat otomatis); bukan isi clipboard |
+| `PASTELAN_PUSH_SUBJECT` | | URL repo PasteLAN | Kontak di token VAPID untuk layanan push (`mailto:…` atau `https://…`) |
 | `PASTELAN_TLS_CERT` / `PASTELAN_TLS_KEY` | | – | Opsional: HTTPS langsung tanpa reverse proxy |
 
 ¹ Minimal salah satu wajib diisi; disarankan `PASTELAN_ADMIN_PASSWORD`. Contoh lengkap:
@@ -24,6 +25,21 @@ admin dikeluarkan. Lupa password baru? Hapus baris `"adminPassword"` di `setting
 Selama password admin belum diganti dari halaman admin, mengubah `PASTELAN_ADMIN_PASSWORD` + restart juga bisa. Password perangkat diganti dari halaman admin
 (yang dari admin menang atas `PASTELAN_PASSWORD`). Perangkat yang sudah login tetap jalan (tokennya tidak bergantung
 pada password); cabut lewat halaman admin / Pengaturan kalau perlu.
+
+## Notifikasi (PWA)
+
+Kiriman **manual** dari Mac (⇧ + klik sebuah clip di menu PasteLAN) memunculkan notifikasi di HP / browser yang
+mengaktifkannya (halaman PasteLAN → **Aktifkan notifikasi**), dengan potongan teks (±60 huruf) dan tombol **Salin**.
+Clip dari autosync tidak memunculkan notifikasi.
+
+- Web Push standar (VAPID, isi terenkripsi `aes128gcm`, RFC 8291): layanan push Google / Apple / Mozilla / Microsoft
+  hanya meneruskan isi terenkripsi. Server hanya menghubungi layanan push itu (alamat lain ditolak).
+- Isi notifikasi: id clip, jenis, nama pengirim, potongan teks. Isi lengkap diambil PWA dari server setelah
+  notifikasi diketuk. Potongan teks bisa terlihat di layar kunci HP (atur di pengaturan notifikasi HP).
+- Android / desktop: tombol **Salin** di notifikasi → PasteLAN terbuka sebentar dan langsung menyalin.
+  iPhone / iPad (iOS 16.4+, harus di-install ke Layar Utama): notifikasi tanpa tombol; ketuk → PasteLAN terbuka di
+  clip itu → tekan **Salin** (Safari tidak mengizinkan salin otomatis).
+- `push-key.pem` hilang / diganti → langganan lama tidak berlaku; PWA otomatis berlangganan ulang saat dibuka.
 
 ## Halaman admin
 
@@ -102,12 +118,14 @@ Semua request `/api/` wajib header `X-PasteLAN: 1`. Login: cookie `pl_token` (br
 | `POST /api/pair` | (sudah login) → `{"code","expires"}`: kode QR sekali pakai, 5 menit |
 | `POST /api/pair/claim` `{"code","name"}` | Tukar kode QR / link setup → `{"token","device"}` + cookie (seperti login) |
 | `GET /api/items?after=&s=&r=&wait=1` | Item baru (long-poll maks 25 detik) + `ids` (item yang masih ada), `rev`, `max` |
-| `POST /api/text` | Body: teks UTF-8 (maks 2 MB) |
-| `POST /api/image` | Body: file gambar (maks 30 MB; jenis dicek dari isi) |
+| `POST /api/text[?notify=1]` | Body: teks UTF-8 (maks 2 MB). `notify=1` → notifikasi ke perangkat lain yang berlangganan |
+| `POST /api/image[?notify=1]` | Body: file gambar (maks 30 MB; jenis dicek dari isi) |
 | `GET /api/image/{id}` | Isi gambar |
 | `DELETE /api/items` | Hapus riwayat (semua perangkat) |
 | `DELETE /api/items/{id}` | Hapus satu item (semua perangkat) |
 | `GET /api/devices` · `DELETE /api/devices/{id}` | Daftar / cabut perangkat |
+| `GET /api/push/key` | `{"key","subscribed"}`: kunci publik VAPID untuk `pushManager.subscribe()` |
+| `POST /api/push/subscribe` · `DELETE /api/push/subscribe` | Simpan / hapus langganan notifikasi perangkat ini (`PushSubscription.toJSON()`) |
 | `POST /api/admin/login` `{"password"}` · `POST /api/admin/logout` | Sesi admin (cookie `pl_admin`) |
 | `GET /api/admin/status` · `PUT /api/admin/settings` | Pengaturan, perangkat, pemakaian memori |
 | `POST /api/admin/password` · `POST /api/admin/setup-link` | Password perangkat · link setup sekali pakai |

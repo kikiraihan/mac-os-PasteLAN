@@ -37,6 +37,9 @@ sebagai aplikasi. Opsi A tetap terdokumentasi di `../opsi-a-mac-app-plus-browser
       menu Mac gaya Clipy (riwayat langsung di menu, ⌘0–⌘9, pengaturan di submenu)
 - [x] v1.7.0: riwayat Mac tetap ada setelah restart (`HistoryStore`, seperti CopyClip), bisa dimatikan di
       Pengaturan → Umum; gambar sebagai file, id item server tidak disimpan
+- [x] v1.8.0: "Sinkron" → **Autosync** (opsi "Kirim setiap copy otomatis" digabung); notifikasi PWA (Web Push,
+      `server/push.go`) untuk kiriman manual ⇧ + klik dari Mac, potongan teks + tombol **Salin**; tombol Install PWA
+- [ ] Uji notifikasi di HP nyata: Android (tombol Salin) & iPhone ter-install (ketuk → Salin)
 - [ ] Uji di Mac & HP nyata: login, install PWA, kirim dua arah, cabut perangkat
 - [ ] Uji metode Wi-Fi lokal di Mac nyata & ganti-ganti metode
 - [x] CI/CD server (pola Racik): `server-ci.yml` + `deploy-server.yml` → SSH, `deploy/deploy.sh` (backup data,

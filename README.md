@@ -25,7 +25,10 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
   Gambar juga bisa ditempel langsung di kotak teks
 - **Mac → HP**: setiap ⌘C di Mac (teks, screenshot, gambar dari browser, file gambar di Finder)
   **muncul otomatis** di HP dalam ±1 detik. Tekan **Salin** / **Salin gambar**
-- **PWA**: install di iPhone & Android ("Install" / "Tambahkan ke Layar Utama"), tampil seperti aplikasi biasa
+- **PWA**: install di iPhone & Android (tombol **Install PasteLAN** di Pengaturan halaman, atau "Tambahkan ke Layar
+  Utama" di Safari), tampil seperti aplikasi biasa
+- **Notifikasi di HP** untuk kiriman manual dari Mac (**⇧ + klik** sebuah clip di menu): potongan teks + tombol
+  **Salin**. Clip dari autosync tidak memunculkan notifikasi. Di iPhone notifikasi tanpa tombol: ketuk lalu tekan Salin
 - Bisa dipakai dari **banyak perangkat** sekaligus (HP, tablet, laptop lain); tiap perangkat login sekali
 - **Clipboard manager di Mac** (gaya Clipy): riwayat langsung di menu (default 15 clip, diatur di **Pengaturan… → Umum**),
   klik item atau tekan **⌘0–⌘9** saat menu terbuka untuk menyalinnya lagi, plus kotak **Cari clip…**;

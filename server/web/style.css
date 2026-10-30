@@ -50,3 +50,6 @@ input:disabled,select:disabled{opacity:.5}
 .item .row button.del{flex:none}
 .search{margin:0 0 12px;-webkit-appearance:none;appearance:none;background:var(--card)}
 .item.hide{display:none}
+.notice{border-color:var(--accent)}
+.item.flash{outline:2px solid var(--accent);outline-offset:2px}
+.row:has(> [hidden]:only-child){display:none}
