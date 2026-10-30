@@ -50,6 +50,7 @@ type device struct {
 	TokenHash string    `json:"tokenHash"`
 	Created   time.Time `json:"created"`
 	LastSeen  time.Time `json:"lastSeen"`
+	Push      *pushSub  `json:"push,omitempty"` // langganan notifikasi PWA (kosong = tidak berlangganan)
 }
 
 type failInfo struct {
@@ -484,4 +485,45 @@ func (a *auth) save() error {
 		return err
 	}
 	return os.Rename(tmp, a.file)
+}
+
+type pushTarget struct {
+	id  string
+	sub pushSub
+}
+
+// pushTargets: perangkat yang berlangganan notifikasi, kecuali perangkat except (pengirim)
+func (a *auth) pushTargets(except string) []pushTarget {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []pushTarget
+	for _, d := range a.devices {
+		if d.Push != nil && d.ID != except {
+			out = append(out, pushTarget{d.ID, *d.Push})
+		}
+	}
+	return out
+}
+
+// setPush menyimpan (sub ≠ nil) atau menghapus langganan push perangkat. ifEndpoint ≠ "" → hanya dihapus kalau
+// langganannya masih yang itu (langganan baru yang dibuat sementara itu tidak ikut terhapus).
+func (a *auth) setPush(id string, sub *pushSub, ifEndpoint string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, d := range a.devices {
+		if d.ID != id {
+			continue
+		}
+		if sub == nil && (d.Push == nil || (ifEndpoint != "" && d.Push.Endpoint != ifEndpoint)) {
+			return nil
+		}
+		old := d.Push
+		d.Push = sub
+		if err := a.save(); err != nil {
+			d.Push = old
+			return err
+		}
+		return nil
+	}
+	return nil
 }

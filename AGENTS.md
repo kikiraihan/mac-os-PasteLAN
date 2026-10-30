@@ -47,6 +47,9 @@ Merge ke `main` dengan versi yang belum punya tag akan otomatis membuat tag `v<v
     (opsional, hash PBKDF2 di `settings.json`), ganti password admin, batas riwayat. Tanpa database: `settings.json`
     + `devices.json` cukup (dibaca sekali saat start, ditulis atomik). Agen yang memasang server: baca
     `server/AGENTS.md` (jangan salin password contoh dari `deploy/pastelan.env.example`).
+    Notifikasi PWA: Web Push (`server/push.go`, VAPID + `aes128gcm`, kunci `push-key.pem` di folder data, langganan
+    per perangkat di `devices.json`), hanya untuk `POST /api/text|image?notify=1` (⇧ + klik di menu Mac), bukan autosync;
+    server hanya menghubungi host layanan push yang dikenal (`pushHosts`).
     CI/CD server: `server-ci.yml` (cek + build) dan `deploy-server.yml` (push `main` yang mengubah `server/` → SSH →
     `server/deploy/deploy.sh`: backup, health check, rollback otomatis). Panduan: `server/CICD.md`.
 - Versi di `Resources/Info.plist` berlaku untuk keduanya (satu rilis = aplikasi Mac + binary server).

@@ -37,6 +37,19 @@
 - Isi bertanda rahasia password manager (`org.nspasteboard.ConcealedType` dkk.) tetap tidak pernah masuk riwayat.
 - Isi clipboard di **server** tetap hanya di memori (aturan ini tidak berubah).
 
+## Notifikasi PWA (v1.8.0)
+
+- Web Push standar: isi notifikasi dienkripsi `aes128gcm` (RFC 8291) untuk kunci browser, ditandatangani VAPID (ES256).
+  Layanan push (Google / Apple / Mozilla / Microsoft) hanya melihat ukuran & waktu, bukan isi.
+- Isi notifikasi sengaja kecil: id clip, jenis, nama pengirim, potongan teks ±60 huruf (permintaan pemilik). Potongan
+  ini bisa tampil di layar kunci HP. Isi lengkap tetap diambil dari server (login perangkat) setelah notifikasi diketuk.
+- Hanya kiriman manual (`?notify=1`, ⇧ + klik di menu Mac), bukan autosync. Pengirim tidak menerima notifikasinya sendiri.
+- Anti-SSRF: endpoint langganan wajib HTTPS ke host layanan push yang dikenal (`pushHosts` di `push.go`), tanpa
+  userinfo, maks 1 KB; redirect tidak diikuti. Langganan dibuang saat layanan push menjawab 401/403/404/410.
+- Kunci privat VAPID `push-key.pem` (0600) dibuat server sendiri di folder data, tidak pernah dikirim; ikut backup
+  `deploy.sh`. Langganan ikut terhapus saat perangkat dicabut.
+- Wi-Fi lokal tidak punya notifikasi (Web Push butuh HTTPS + server publik).
+
 ## Model ancaman — metode Wi-Fi lokal (opsional)
 
 - **Penyadap pasif di Wi-Fi yang sama**: tidak bisa membaca / memalsukan / mengulang (ChaCha20-Poly1305, kunci di

@@ -84,7 +84,7 @@ tanpa cloud, dan tanpa akun.
 - [x] `GET /api/image/<id>` untuk pratinjau & simpan
 - [x] Tombol **Salin** (fallback `execCommand` karena HTTP lokal bukan secure context)
 - [x] Submenu Riwayat di Mac (klik = salin ulang) + "Hapus riwayat"
-- [x] Mode manual: "Kirim clipboard Mac sekarang"
+- [x] Mode manual: "Kirim clipboard Mac sekarang" (v1.8.0: digabung ke **Autosync**; saat mati kirim satu clip lewat ⇧ + klik)
 - [x] Jumlah perangkat terhubung di menu
 
 ### Sprint 4 — Polish & rilis
