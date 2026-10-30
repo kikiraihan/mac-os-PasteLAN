@@ -27,7 +27,7 @@ var b64 = base64.RawURLEncoding
 
 // Contoh resmi RFC 8291 Appendix A: hasil enkripsi harus sama persis
 func TestEncryptPushRFC8291(t *testing.T) {
-	asPriv, _ := b64.DecodeString("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw")
+	asPriv, _ := b64.DecodeString("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw") // ggignore: contoh publik RFC 8291
 	eph, err := ecdh.P256().NewPrivateKey(asPriv)
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func TestEncryptPushRFC8291(t *testing.T) {
 	salt, _ := b64.DecodeString("DGv6ra1nlYgDCS1FRnbzlw")
 	sub := pushSub{
 		P256dh: "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
-		Auth:   "BTBZMqHH6r4Tts7J_aSIgg",
+		Auth:   "BTBZMqHH6r4Tts7J_aSIgg", // ggignore: contoh publik RFC 8291, bukan rahasia
 	}
 	got, err := encryptPushWith(sub, []byte("When I grow up, I want to be a watermelon"), eph, salt)
 	if err != nil {
@@ -166,7 +166,7 @@ func TestPushNotify(t *testing.T) {
 	f := newFakePush(t)
 	a.push.client = f.ts.Client()
 	a.push.allowHost = func(string) bool { return true }
-	_, mac, _ := login(t, ts, testPassword, "MacBook")
+	_, mac, _ := login(t, ts, testPassword, "MacBook") // ggignore: password tes
 	_, hp, _ := login(t, ts, testPassword, "HP")
 
 	res, b := do(t, ts, "GET", "/api/push/key", hp, nil, nil)
