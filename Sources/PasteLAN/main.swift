@@ -3111,8 +3111,17 @@ enum Form {
     }
 }
 
+/// View dokumen untuk scroll view: koordinat dari atas, jadi isi mulai di atas (bukan menempel ke bawah)
+final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 /// Halaman berukuran tetap berisi bagian-bagian formulir dari atas ke bawah
+/// (isinya bisa di-scroll bila lebih tinggi dari jendela)
 final class FormPage: NSViewController {
+    private let scroll = NSScrollView()
+    private let doc = FlippedView()
+
     override func loadView() {
         let v = NSView(frame: NSRect(origin: .zero, size: SettingsWindow.size))
         for c in [v.widthAnchor.constraint(equalToConstant: SettingsWindow.size.width),
@@ -3120,19 +3129,40 @@ final class FormPage: NSViewController {
             c.priority = .defaultLow
             c.isActive = true
         }
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        doc.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = doc
+        v.addSubview(scroll)
+        let clip = scroll.contentView
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: v.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: v.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: v.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: v.trailingAnchor),
+            doc.topAnchor.constraint(equalTo: clip.topAnchor),
+            doc.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+            doc.widthAnchor.constraint(equalTo: clip.widthAnchor),
+        ])
         view = v
         preferredContentSize = SettingsWindow.size
     }
 
     func set(_ sections: [NSView]) {
-        view.subviews.forEach { $0.removeFromSuperview() }
+        _ = view // pastikan loadView sudah jalan
+        // isi dokumen diganti; posisi scroll tetap (scroll view tidak dibuat ulang)
+        doc.subviews.forEach { $0.removeFromSuperview() }
         let content = Form.stack([], spacing: 18)
         content.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(content)
+        doc.addSubview(content)
         NSLayoutConstraint.activate([
-            content.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),
-            content.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
-            content.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
+            content.topAnchor.constraint(equalTo: doc.topAnchor, constant: 20),
+            content.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 24),
+            content.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -24),
+            content.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -20),
         ])
         for s in sections {
             content.addArrangedSubview(s)
