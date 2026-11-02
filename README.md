@@ -35,10 +35,13 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
   **tahan ⌥ lalu klik** (atau ⌥⌘0–⌥⌘9) untuk menghapus satu clip, bisa diurungkan dari menu; **tahan ⌃ lalu klik** untuk
   mengirim satu clip saja ke server / HP (berguna saat autosync mati); menu langsung terbuka lagi setelah hapus / kirim,
   jadi banyak clip bisa dihapus / dikirim berturut-turut
+- **Menu ringkas**: di bawah riwayat hanya **Buka PasteLAN di browser** dan **Pengaturan…**; status, Tambah HP,
+  Autosync, Dengarkan kiriman dari server, dan Clipboard manager bisa ditampilkan lagi di
+  **Pengaturan… → Umum → Item di menu**
 - **Riwayat tetap ada setelah restart** (seperti CopyClip): riwayat Mac disimpan di
   `~/Library/Application Support/PasteLAN/History` (hanya bisa dibaca akun Anda). Bisa dimatikan di
   **Pengaturan… → Umum → Simpan riwayat di Mac** (riwayat lalu hanya di memori, file lama langsung dihapus)
-- **Autosync** (menu → **Autosync dengan server & browser**): setiap copy di Mac otomatis terkirim, kiriman dari HP
+- **Autosync** (**Pengaturan… → Umum**, atau menu → **Autosync dengan server & browser** bila ditampilkan): setiap copy di Mac otomatis terkirim, kiriman dari HP
   otomatis masuk. Kalau dimatikan, PasteLAN jadi **clipboard manager offline** biasa: semua copy tetap masuk riwayat,
   tapi tidak dikirim; satu clip masih bisa dikirim dengan **⌃ + klik**. Saat dinyalakan lagi hanya copy baru yang
   dikirim; clip lama bisa dicentang lalu dikirim dari **Clipboard manager** (tab Clipboard di Pengaturan)

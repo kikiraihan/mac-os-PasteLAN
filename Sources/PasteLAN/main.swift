@@ -2086,12 +2086,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     /// Jumlah clip yang diingat di riwayat Mac
     var historyLimit: Int { max(5, d.integer(forKey: "historyLimit")) }
     static let historyLimits = [10, 15, 20, 30, 50, 100]
+    /// Item di bagian bawah menu yang bisa dipilih tampil / tidak (Pengaturan → Umum → Item di menu).
+    /// Default ringkas: hanya "Buka PasteLAN di browser"; "Pengaturan…" selalu tampil, begitu juga "Atur server & login…"
+    /// (belum login) dan "Tambah HP" di mode Wi-Fi lokal (satu-satunya tempat QR) supaya tidak ada yang terkunci.
+    static let menuLinks: [(key: String, title: String, detail: String, on: Bool)] = [
+        ("menuStatus", "Status koneksi", "Baris status (titik hijau / abu-abu) di atas item menu.", false),
+        ("menuPair", "Tambah HP (scan QR)…", "Mode server. Di mode Wi-Fi lokal selalu tampil (tempat QR-nya).", false),
+        ("menuWeb", "Buka PasteLAN di browser", "Mode server.", true),
+        ("menuSync", "Autosync", "Nyalakan / matikan autosync langsung dari menu.", false),
+        ("menuListen", "Dengarkan kiriman dari server", "Mode server, hanya saat autosync mati.", false),
+        ("menuManager", "Clipboard manager", "Buka tab Clipboard di Pengaturan.", false),
+    ]
+    func showsInMenu(_ key: String) -> Bool { d.bool(forKey: key) }
     /// Metode: "server" (default, lewat server PasteLAN) atau "lan" (Wi-Fi lokal tanpa server)
     var lanMode: Bool { d.string(forKey: "mode") == "lan" }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         d.register(defaults: ["sharing": true, "saveImages": false, "mode": "server", "historyLimit": 15,
                               "historyPersist": true, "listen": true])
+        d.register(defaults: Dictionary(uniqueKeysWithValues: AppDelegate.menuLinks.map { ($0.key, $0.on) }))
         d.removeObject(forKey: "token") // link Wi-Fi lokal lama (v0.1.x, token di ?t=) tidak berlaku lagi
         // "Kirim setiap copy otomatis" (≤ v1.7) digabung ke autosync: yang dulu mematikannya → autosync mati
         // (copy di Mac tetap tidak terkirim otomatis; kirim satu clip lewat ⌃ + klik)
@@ -2482,6 +2495,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     /// Susunan menu (gaya Clipy): kotak cari + riwayat clip di atas (⌘0–⌘9 untuk 10 teratas), lalu satu bagian berisi
     /// status, tambah HP, buka browser, autosync, clipboard manager & Pengaturan (jendela sendiri), terakhir "Keluar".
     /// "…" hanya untuk item yang membuka dialog / meminta isian lagi (konvensi macOS), bukan karena teksnya terpotong.
+    /// Item mana yang tampil diatur di Pengaturan → Umum → Item di menu (`menuLinks`).
     func menuNeedsUpdate(_ m: NSMenu) {
         menu.removeAllItems()
         updater.menuItem.menu?.removeItem(updater.menuItem)
@@ -2491,21 +2505,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         addHistorySection()
         menu.addItem(.separator())
         if lanMode { addLANSection() } else { addServerSection() }
-        let sync = add(lanMode ? "Autosync dengan HP (Wi-Fi lokal)" : "Autosync dengan server & browser", #selector(toggleSharing), on: sharing)
-        sync.image = symbol("arrow.triangle.2.circlepath")
-        sync.toolTip = "Nyala: setiap copy di Mac otomatis terkirim, kiriman dari HP otomatis masuk. " +
-            (lanMode ? "Mati: clipboard manager offline biasa (server Wi-Fi lokal di Mac ikut mati). "
-                     : "Mati: clipboard manager offline biasa; tahan ⌃ lalu klik sebuah clip untuk mengirimnya. ") +
-            "Saat dinyalakan lagi, hanya copy baru yang dikirim."
-        if !lanMode, !sharing {
+        if showsInMenu("menuSync") {
+            let sync = add(lanMode ? "Autosync dengan HP (Wi-Fi lokal)" : "Autosync dengan server & browser", #selector(toggleSharing), on: sharing)
+            sync.image = symbol("arrow.triangle.2.circlepath")
+            sync.toolTip = "Nyala: setiap copy di Mac otomatis terkirim, kiriman dari HP otomatis masuk. " +
+                (lanMode ? "Mati: clipboard manager offline biasa (server Wi-Fi lokal di Mac ikut mati). "
+                         : "Mati: clipboard manager offline biasa; tahan ⌃ lalu klik sebuah clip untuk mengirimnya. ") +
+                "Saat dinyalakan lagi, hanya copy baru yang dikirim."
+        }
+        if !lanMode, !sharing, showsInMenu("menuListen") {
             // hanya relevan saat autosync mati (autosync sudah menerima sendiri)
             let ear = add("Dengarkan kiriman dari server", #selector(toggleListen), on: listen, enabled: loggedIn)
             ear.image = symbol("ear")
             ear.toolTip = "Nyala: Mac tetap tersambung ke server tanpa mengirim copy di Mac. Kiriman dari HP / browser " +
                 "masuk riwayat (clipboard Mac tidak ditimpa) dan ikon menu bar diberi titik di kanan atas sampai menu dibuka."
         }
-        let manager = add("Clipboard manager", #selector(openClipboardManager))
-        manager.image = symbol("list.bullet.rectangle")
+        if showsInMenu("menuManager") {
+            let manager = add("Clipboard manager", #selector(openClipboardManager))
+            manager.image = symbol("list.bullet.rectangle")
+        }
         let pref = add("Pengaturan…", #selector(openSettings))
         pref.keyEquivalent = ","
         pref.image = symbol("gearshape")
@@ -2642,10 +2660,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let st = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
         st.isEnabled = false
         st.image = statusDot((sharing || listening) && loggedIn && server.state == .connected)
-        menu.addItem(st)
+        if showsInMenu("menuStatus") { menu.addItem(st) }
         if loggedIn, serverURL != nil {
-            add("Tambah HP (scan QR)…", #selector(pairPhone)).image = symbol("qrcode.viewfinder")
-            add("Buka PasteLAN di browser", #selector(openWeb)).image = symbol("safari")
+            if showsInMenu("menuPair") { add("Tambah HP (scan QR)…", #selector(pairPhone)).image = symbol("qrcode.viewfinder") }
+            if showsInMenu("menuWeb") { add("Buka PasteLAN di browser", #selector(openWeb)).image = symbol("safari") }
         } else {
             add("Atur server & login…", #selector(setupServer)).image = symbol("server.rack")
         }
@@ -2657,7 +2675,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             let st = NSMenuItem(title: "Autosync mati · clipboard manager offline", action: nil, keyEquivalent: "")
             st.isEnabled = false
             st.image = statusDot(false)
-            menu.addItem(st)
+            if showsInMenu("menuStatus") { menu.addItem(st) }
             return
         }
         let url = lan.shareURL
@@ -2671,7 +2689,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                             action: nil, keyEquivalent: "")
         st.isEnabled = false
         st.image = statusDot(lan.running && url != nil)
-        menu.addItem(st)
+        if showsInMenu("menuStatus") { menu.addItem(st) }
 
         let pair = NSMenuItem(title: "Tambah HP (scan QR)", action: nil, keyEquivalent: "")
         pair.image = symbol("qrcode.viewfinder")
@@ -2807,7 +2825,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let a = NSAlert()
         a.messageText = "Clip tidak terkirim"
         if !canSendOne {
-            a.informativeText = lanMode ? "Wi-Fi lokal: nyalakan \"Autosync dengan HP\" dulu di menu PasteLAN."
+            a.informativeText = lanMode ? "Wi-Fi lokal: nyalakan \"Autosync dengan HP\" dulu (Pengaturan… → Umum)."
                                         : "Mac ini belum login ke server PasteLAN (Pengaturan… → Koneksi)."
         } else {
             a.informativeText = "Gambar ini berasal dari server dan isinya belum diambil ke Mac (memang sudah ada di server)."
@@ -2926,10 +2944,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         selama ⌥ / ⌃ masih ditahan Anda bisa menghapus / mengirim banyak clip berturut-turut. Jumlah clip yang diingat diatur di \
         Pengaturan → Umum.
 
-        Autosync: "Autosync dengan server & browser" di menu membuat setiap copy di Mac otomatis terkirim dan kiriman \
+        Autosync: "Autosync dengan server & browser" (Pengaturan → Umum, atau di menu bila ditampilkan) membuat setiap copy di Mac otomatis terkirim dan kiriman \
         dari HP otomatis masuk. Kalau dimatikan, PasteLAN jadi clipboard manager offline biasa: semua copy tetap masuk \
         riwayat Mac, tapi tidak dikirim; satu clip masih bisa dikirim dengan ⌃ + klik. Saat dinyalakan lagi hanya copy \
-        baru yang dikirim; clip lama bisa dicentang lalu dikirim dari menu → "Clipboard manager".
+        baru yang dikirim; clip lama bisa dicentang lalu dikirim dari Pengaturan → Clipboard.
+
+        Item di menu: selain riwayat, menu hanya menampilkan "Buka PasteLAN di browser" dan "Pengaturan…". Status, \
+        Tambah HP, Autosync, Dengarkan kiriman dari server, dan Clipboard manager bisa ditampilkan lagi di \
+        Pengaturan → Umum → Item di menu.
 
         Dengarkan kiriman dari server (mode server, saat autosync mati): Mac tetap menerima kiriman dari HP / browser \
         tanpa mengirim copy di Mac. Kiriman itu masuk riwayat (clipboard Mac tidak ditimpa), ikon menu bar diberi titik \
@@ -3337,6 +3359,8 @@ final class SettingsWindow: NSObject {
     private lazy var imagesSwitch = Form.toggle(self, #selector(saveImagesChanged(_:)))
     private lazy var loginSwitch = Form.toggle(self, #selector(loginChanged(_:)))
     private lazy var persistSwitch = Form.toggle(self, #selector(persistChanged(_:)))
+    /// Satu switch per item di `AppDelegate.menuLinks` (urutannya sama)
+    private lazy var menuSwitches: [NSSwitch] = AppDelegate.menuLinks.map { _ in Form.toggle(self, #selector(menuLinkChanged(_:))) }
     private lazy var limitPopup: NSPopUpButton = {
         let p = NSPopUpButton(frame: .zero, pullsDown: false)
         for n in AppDelegate.historyLimits {
@@ -3416,6 +3440,8 @@ final class SettingsWindow: NSObject {
             Form.section("Sistem", [
                 Form.row("Buka saat login", "PasteLAN otomatis berjalan setiap Mac dinyalakan.", loginSwitch),
             ]),
+            // "Pengaturan…" selalu tampil di menu, jadi tidak ada di sini
+            Form.section("Item di menu", zip(AppDelegate.menuLinks, menuSwitches).map { Form.row($0.title, $0.detail, $1) }),
         ])
     }
 
@@ -3428,6 +3454,7 @@ final class SettingsWindow: NSObject {
         imagesSwitch.state = app.d.bool(forKey: "saveImages") ? .on : .off
         loginSwitch.state = SMAppService.mainApp.status == .enabled ? .on : .off
         persistSwitch.state = app.historyPersist ? .on : .off
+        for (link, sw) in zip(AppDelegate.menuLinks, menuSwitches) { sw.state = app.showsInMenu(link.key) ? .on : .off }
         if limitPopup.item(withTitle: "\(app.historyLimit) clip") == nil {
             limitPopup.addItem(withTitle: "\(app.historyLimit) clip")
             limitPopup.lastItem?.tag = app.historyLimit
@@ -3526,6 +3553,10 @@ final class SettingsWindow: NSObject {
     @objc func listenChanged(_ s: NSSwitch) { if (s.state == .on) != app.listen { app.toggleListen() } }
     @objc func saveImagesChanged(_ s: NSSwitch) { app.d.set(s.state == .on, forKey: "saveImages") }
     @objc func persistChanged(_ s: NSSwitch) { app.setHistoryPersist(s.state == .on) }
+    @objc func menuLinkChanged(_ s: NSSwitch) {
+        guard let i = menuSwitches.firstIndex(where: { $0 === s }) else { return }
+        app.d.set(s.state == .on, forKey: AppDelegate.menuLinks[i].key) // menu dibangun ulang setiap dibuka
+    }
     @objc func loginChanged(_ s: NSSwitch) {
         app.toggleLogin()
         reload()
