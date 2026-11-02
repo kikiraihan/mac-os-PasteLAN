@@ -27,19 +27,20 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
   **muncul otomatis** di HP dalam ±1 detik. Tekan **Salin** / **Salin gambar**
 - **PWA**: install di iPhone & Android (tombol **Install PasteLAN** di Pengaturan halaman, atau "Tambahkan ke Layar
   Utama" di Safari), tampil seperti aplikasi biasa
-- **Notifikasi di HP** untuk kiriman manual dari Mac (**⇧ + klik** sebuah clip di menu): potongan teks + tombol
+- **Notifikasi di HP** untuk kiriman manual dari Mac (**⌃ + klik** sebuah clip di menu): potongan teks + tombol
   **Salin**. Clip dari autosync tidak memunculkan notifikasi. Di iPhone notifikasi tanpa tombol: ketuk lalu tekan Salin
 - Bisa dipakai dari **banyak perangkat** sekaligus (HP, tablet, laptop lain); tiap perangkat login sekali
 - **Clipboard manager di Mac** (gaya Clipy): riwayat langsung di menu (default 15 clip, diatur di **Pengaturan… → Umum**),
   klik item atau tekan **⌘0–⌘9** saat menu terbuka untuk menyalinnya lagi, plus kotak **Cari clip…**;
-  **tahan ⌥ lalu klik** (atau ⌥⌘0–⌥⌘9) untuk menghapus satu clip, bisa diurungkan dari menu; **tahan ⇧ lalu klik** untuk
-  mengirim satu clip saja ke server / HP (berguna saat autosync mati)
+  **tahan ⌥ lalu klik** (atau ⌥⌘0–⌥⌘9) untuk menghapus satu clip, bisa diurungkan dari menu; **tahan ⌃ lalu klik** untuk
+  mengirim satu clip saja ke server / HP (berguna saat autosync mati); menu langsung terbuka lagi setelah hapus / kirim,
+  jadi banyak clip bisa dihapus / dikirim berturut-turut
 - **Riwayat tetap ada setelah restart** (seperti CopyClip): riwayat Mac disimpan di
   `~/Library/Application Support/PasteLAN/History` (hanya bisa dibaca akun Anda). Bisa dimatikan di
   **Pengaturan… → Umum → Simpan riwayat di Mac** (riwayat lalu hanya di memori, file lama langsung dihapus)
 - **Autosync** (menu → **Autosync dengan server & browser**): setiap copy di Mac otomatis terkirim, kiriman dari HP
   otomatis masuk. Kalau dimatikan, PasteLAN jadi **clipboard manager offline** biasa: semua copy tetap masuk riwayat,
-  tapi tidak dikirim; satu clip masih bisa dikirim dengan **⇧ + klik**. Saat dinyalakan lagi hanya copy baru yang
+  tapi tidak dikirim; satu clip masih bisa dikirim dengan **⌃ + klik**. Saat dinyalakan lagi hanya copy baru yang
   dikirim; clip lama bisa dicentang lalu dikirim dari **Clipboard manager** (tab Clipboard di Pengaturan)
 - **Pencarian clip** juga di halaman web (browser / HP)
 - **Hapus per item** atau **hapus semua** dari halaman web (ikut hilang di semua perangkat)

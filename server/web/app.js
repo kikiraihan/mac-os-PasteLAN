@@ -394,7 +394,7 @@
   };
 
   // ---------- notifikasi push ----------
-  // Hanya untuk kiriman manual dari Mac (⇧ + klik di menu); clip dari autosync tidak memunculkan notifikasi.
+  // Hanya untuk kiriman manual dari Mac (⌃ + klik di menu); clip dari autosync tidak memunculkan notifikasi.
   const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
   const b64uBytes = s => {
     const b = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - s.length % 4) % 4));
@@ -447,9 +447,9 @@
     btn.hidden = false;
     btn.textContent = pushOn ? 'Matikan notifikasi' : 'Aktifkan notifikasi';
     hint.textContent = pushOn
-      ? 'Aktif: notifikasi muncul saat Mac mengirim clip secara manual (⇧ + klik di menu PasteLAN). Ketuk "Salin" di notifikasi untuk menyalin.'
-      : 'Notifikasi saat Mac mengirim clip secara manual (⇧ + klik di menu PasteLAN), dengan potongan teks dan tombol "Salin". Clip dari autosync tidak memunculkan notifikasi.';
-    $('notifText').textContent = 'Aktifkan notifikasi supaya clip yang dikirim manual dari Mac (⇧ + klik di menu PasteLAN) langsung muncul, lengkap dengan tombol "Salin".';
+      ? 'Aktif: notifikasi muncul saat Mac mengirim clip secara manual (⌃ + klik di menu PasteLAN). Ketuk "Salin" di notifikasi untuk menyalin.'
+      : 'Notifikasi saat Mac mengirim clip secara manual (⌃ + klik di menu PasteLAN), dengan potongan teks dan tombol "Salin". Clip dari autosync tidak memunculkan notifikasi.';
+    $('notifText').textContent = 'Aktifkan notifikasi supaya clip yang dikirim manual dari Mac (⌃ + klik di menu PasteLAN) langsung muncul, lengkap dengan tombol "Salin".';
     $('notifEnable').hidden = false;
     card.hidden = pushOn || Notification.permission !== 'default' || laterDismissed();
   }
