@@ -2044,6 +2044,139 @@ final class PlainTextField: NSTextField {
     }
 }
 
+// MARK: - Pratinjau gambar saat clip gambar di menu di-hover
+
+/// Panel kecil di samping menu: thumbnail gambar + catatan yang sama dengan tooltip baris clip.
+/// Menu bar macOS menahan semua klik selama menu terbuka, jadi klik di panel ini dikenali saat menu tertutup
+/// (`menuDidClose`: posisi mouse ada di dalam panel) → jendela pratinjau ukuran penuh dibuka.
+final class ImageHoverPanel {
+    static let thumb: CGFloat = 240
+    private let panel: NSPanel
+    private let imageView = NSImageView()
+    private lazy var imageWidth = imageView.widthAnchor.constraint(equalToConstant: ImageHoverPanel.thumb)
+    private lazy var imageHeight = imageView.heightAnchor.constraint(equalToConstant: ImageHoverPanel.thumb)
+    private let note = Form.note("", width: ImageHoverPanel.thumb)
+    private var thumbs: [Int: NSImage] = [:] // gambar yang sudah dibaca selama menu terbuka (dikosongkan saat menu tutup)
+    private(set) var clipID: Int?
+    private var previews: [NSWindow] = []
+
+    init() {
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 260, height: 300),
+                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
+
+        let bg = NSVisualEffectView()
+        bg.material = .menu
+        bg.state = .active
+        bg.wantsLayer = true
+        bg.layer?.cornerRadius = 8
+        bg.layer?.masksToBounds = true
+        imageView.imageScaling = .scaleProportionallyDown
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        let hint = Form.note("Klik gambar untuk pratinjau", width: ImageHoverPanel.thumb)
+        hint.textColor = .tertiaryLabelColor
+        let stack = Form.stack([imageView, note, hint], spacing: 6)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: bg.topAnchor, constant: 10),
+            stack.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -10),
+            stack.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -10),
+            stack.widthAnchor.constraint(equalToConstant: ImageHoverPanel.thumb),
+        ])
+        NSLayoutConstraint.activate([imageWidth, imageHeight])
+        panel.contentView = bg
+    }
+
+    var isVisible: Bool { panel.isVisible }
+
+    /// Tampilkan gambar clip `c` di samping menu; `tip` = teks tooltip baris clip
+    func show(_ c: LocalClip, tip: String) {
+        guard c.kind == "image", let img = image(c) else { return hide() }
+        clipID = c.id
+        imageView.image = img
+        let s = img.size
+        let scale = min(1, ImageHoverPanel.thumb / max(s.width, 1), ImageHoverPanel.thumb / max(s.height, 1))
+        imageWidth.constant = max(1, (s.width * scale).rounded())
+        imageHeight.constant = max(1, (s.height * scale).rounded())
+        note.stringValue = tip
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.setContentSize(panel.contentView?.fittingSize ?? panel.frame.size)
+        place()
+        panel.orderFrontRegardless()
+    }
+
+    func hide() {
+        clipID = nil
+        panel.orderOut(nil)
+    }
+
+    /// Menu tertutup: klik di panel → pratinjau. Selalu menyembunyikan panel & membuang cache thumbnail.
+    func menuClosed(_ history: History) {
+        defer {
+            hide()
+            thumbs.removeAll()
+        }
+        guard panel.isVisible, let id = clipID, panel.frame.contains(NSEvent.mouseLocation) else { return }
+        let ev = NSApp.currentEvent?.type
+        let clicked = NSEvent.pressedMouseButtons & 1 != 0 || ev == .leftMouseDown || ev == .leftMouseUp
+        if clicked, let c = history.clip(id), let img = image(c) { preview(img, title: c.title) }
+    }
+
+    private func image(_ c: LocalClip) -> NSImage? {
+        if let t = thumbs[c.id] { return t }
+        guard let data = c.data, let img = NSImage(data: data), img.size.width > 0, img.size.height > 0 else { return nil }
+        thumbs[c.id] = img
+        return img
+    }
+
+    /// Di kiri jendela menu kalau muat (menu bar biasanya di kanan layar), kalau tidak di kanannya; sejajar kursor
+    private func place() {
+        let mouse = NSEvent.mouseLocation
+        let menus = NSApp.windows.filter { $0 !== panel && $0.isVisible && $0.level.rawValue >= NSWindow.Level.popUpMenu.rawValue }
+        let menuFrame = (menus.last(where: { $0.frame.contains(mouse) }) ?? menus.last)?.frame
+            ?? NSRect(x: mouse.x, y: mouse.y, width: 0, height: 0)
+        let screen = (NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main)?.visibleFrame ?? menuFrame
+        let size = panel.frame.size
+        var x = menuFrame.minX - size.width - 6
+        if x < screen.minX { x = menuFrame.maxX + 6 }
+        x = min(max(x, screen.minX), screen.maxX - size.width)
+        var y = mouse.y - size.height / 2
+        y = min(max(y, screen.minY), screen.maxY - size.height)
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    /// Jendela pratinjau: gambar ukuran asli, diperkecil agar muat 80% layar
+    private func preview(_ img: NSImage, title: String) {
+        let screen = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1200, height: 800)
+        let s = img.size
+        let scale = min(1, screen.width * 0.8 / s.width, screen.height * 0.8 / s.height)
+        let size = NSSize(width: max(200, (s.width * scale).rounded()), height: max(120, (s.height * scale).rounded()))
+        let w = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                         styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        w.title = "Pratinjau — \(title)"
+        w.isReleasedWhenClosed = false
+        let iv = NSImageView()
+        iv.image = img
+        iv.imageScaling = .scaleProportionallyUpOrDown
+        iv.animates = true // GIF ikut bergerak
+        w.contentView = iv
+        w.contentAspectRatio = s
+        w.center()
+        previews.removeAll { !$0.isVisible }
+        previews.append(w)
+        NSApp.activate(ignoringOtherApps: true)
+        w.makeKeyAndOrderFront(nil)
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSTextFieldDelegate {
     /// Lebar tetap & ikon kecil → ikon di menu bar tidak makan tempat (variableLength memberi jarak kiri-kanan lebih lebar)
     let item = NSStatusBar.system.statusItem(withLength: 18)
@@ -2064,6 +2197,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     let searchField = PlainTextField(frame: NSRect(x: 36, y: 3, width: 250, height: 18))
     var flashTimer: Timer?
     var menuOpen = false
+    /// Thumbnail + catatan saat clip gambar di menu di-hover; klik → pratinjau
+    let imageHover = ImageHoverPanel()
+    /// Catatan tooltip per clip gambar (ditampilkan di panel `imageHover`, bukan tooltip biasa supaya tidak dobel)
+    var hoverTips: [Int: String] = [:]
     /// Setelah hapus (⌥) / kirim (⌃) dari menu: menu dibuka lagi (kotak cari tidak dikosongkan) supaya bisa
     /// menghapus / mengirim banyak clip dengan cepat tanpa membuka menu berulang kali
     var keepSearch = false
@@ -2497,6 +2634,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     /// "…" hanya untuk item yang membuka dialog / meminta isian lagi (konvensi macOS), bukan karena teksnya terpotong.
     /// Item mana yang tampil diatur di Pengaturan → Umum → Item di menu (`menuLinks`).
     func menuNeedsUpdate(_ m: NSMenu) {
+        guard m === menu else { return } // submenu "Riwayat lainnya" (delegate yang sama) tidak membangun ulang menu
         menu.removeAllItems()
         updater.menuItem.menu?.removeItem(updater.menuItem)
         if !keepSearch { searchField.stringValue = "" }
@@ -2532,13 +2670,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         menu.addItem(NSMenuItem(title: "Keluar PasteLAN", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
-    func menuWillOpen(_ m: NSMenu) { menuOpen = true }
+    func menuWillOpen(_ m: NSMenu) {
+        guard m === menu else { return } // submenu "Riwayat lainnya" juga memakai delegate ini
+        menuOpen = true
+    }
     func menuDidClose(_ m: NSMenu) {
+        guard m === menu else { return }
+        imageHover.menuClosed(history) // klik di panel gambar → pratinjau
         menuOpen = false
         // menu sudah dibuka = clip baru sudah dilihat → tanda di ikon & di baris clip hilang
         if !unread.isEmpty {
             unread.removeAll()
             updateIcon()
+        }
+    }
+
+    /// Baris clip gambar di-hover → tampilkan gambarnya + catatan tooltip di samping menu.
+    /// Saat kursor keluar menu (menuju panel) panel tetap tampil supaya gambarnya bisa diklik.
+    func menu(_ m: NSMenu, willHighlight it: NSMenuItem?) {
+        guard let it else { return }
+        if let id = it.representedObject as? Int, let tip = hoverTips[id], let c = history.clip(id), !it.isAlternate {
+            imageHover.show(c, tip: tip)
+        } else {
+            imageHover.hide()
         }
     }
 
@@ -2586,6 +2740,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         }
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let list = history.items.filter { $0.matches(query) }
+        hoverTips.removeAll()
+        imageHover.hide()
         if list.isEmpty {
             let e = NSMenuItem(title: history.items.isEmpty ? "Belum ada riwayat. Copy sesuatu di Mac atau kirim dari HP."
                                                             : "Tidak ada clip yang cocok dengan \"\(query)\"",
@@ -2603,6 +2759,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             if fresh { it.image = unreadDot } // clip baru dari server (Dengarkan server) yang belum dilihat
             it.toolTip = "Dari \(c.source)" + (fresh ? " · baru" : "") + (c.pending ? " · belum dikirim ke server / HP" : "") +
                 " · klik untuk menyalin ke clipboard Mac, tahan ⌃ untuk mengirim, tahan ⌥ untuk menghapus"
+            // gambar yang isinya sudah ada di Mac: catatan ini tampil di panel pratinjau (bersama gambarnya)
+            if c.kind == "image", c.data != nil, let tip = it.toolTip {
+                hoverTips[c.id] = tip
+                it.toolTip = nil
+            }
             // tahan ⌥ → baris ini berganti jadi "Hapus" (alternate item: harus tepat setelah item utamanya,
             // tombol pintas sama dengan modifier berbeda → ⌥⌘0–⌥⌘9 menghapus)
             let del = NSMenuItem(title: "Hapus: \(c.title)", action: #selector(deleteClip(_:)), keyEquivalent: it.keyEquivalent)
@@ -2630,6 +2791,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                 if more == nil {
                     let sub = NSMenu()
                     sub.autoenablesItems = false
+                    sub.delegate = self // hover gambar di submenu juga menampilkan pratinjau
                     let mi = NSMenuItem(title: "Riwayat lainnya (\(list.count - inlineClips))", action: nil, keyEquivalent: "")
                     mi.submenu = sub
                     put(mi)
