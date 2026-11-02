@@ -29,7 +29,7 @@ self.addEventListener('fetch', e => {
     .catch(() => caches.match(e.request).then(r => r || caches.match('/'))));
 });
 
-// ---------- notifikasi push (hanya kiriman manual dari Mac: ⇧ + klik di menu) ----------
+// ---------- notifikasi push (hanya kiriman manual dari Mac: ⌃ + klik di menu) ----------
 // Isi push hanya id + potongan teks; isi lengkap diambil halaman dari server setelah notifikasi diketuk.
 self.addEventListener('push', e => {
   let m = {};

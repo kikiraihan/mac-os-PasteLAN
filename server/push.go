@@ -3,7 +3,7 @@ package main
 // Notifikasi Web Push ke PWA (RFC 8030 / 8291 / 8292), hanya standard library.
 //   - Kunci VAPID (ECDSA P-256) dibuat sekali di folder data (push-key.pem, 0600); hanya kunci publiknya yang dikirim.
 //   - Langganan push disimpan per perangkat di devices.json (perangkat dicabut → langganannya ikut hilang).
-//   - Dikirim hanya untuk kiriman manual yang meminta notifikasi (?notify=1, ⇧ + klik di menu Mac), bukan autosync.
+//   - Dikirim hanya untuk kiriman manual yang meminta notifikasi (?notify=1, ⌃ + klik di menu Mac), bukan autosync.
 //   - Isi notifikasi terenkripsi end-to-end (aes128gcm) sehingga layanan push (Google / Apple / Mozilla) tidak bisa
 //     membacanya. Hanya potongan pendek teks yang ikut; isi lengkap diambil PWA dari server setelah notifikasi diketuk.
 

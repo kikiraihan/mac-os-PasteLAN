@@ -28,7 +28,7 @@ pada password); cabut lewat halaman admin / Pengaturan kalau perlu.
 
 ## Notifikasi (PWA)
 
-Kiriman **manual** dari Mac (⇧ + klik sebuah clip di menu PasteLAN) memunculkan notifikasi di HP / browser yang
+Kiriman **manual** dari Mac (⌃ + klik sebuah clip di menu PasteLAN) memunculkan notifikasi di HP / browser yang
 mengaktifkannya (halaman PasteLAN → **Aktifkan notifikasi**), dengan potongan teks (±60 huruf) dan tombol **Salin**.
 Clip dari autosync tidak memunculkan notifikasi.
 

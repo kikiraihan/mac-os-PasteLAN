@@ -2064,10 +2064,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     let searchField = PlainTextField(frame: NSRect(x: 36, y: 3, width: 250, height: 18))
     var flashTimer: Timer?
     var menuOpen = false
+    /// Setelah hapus (⌥) / kirim (⌃) dari menu: menu dibuka lagi (kotak cari tidak dikosongkan) supaya bisa
+    /// menghapus / mengirim banyak clip dengan cepat tanpa membuka menu berulang kali
+    var keepSearch = false
     var lastDeleted: (clip: LocalClip, index: Int)? // untuk "Urungkan hapus" (satu clip terakhir)
 
     /// Autosync dengan server / HP: setiap copy di Mac otomatis terkirim & kiriman dari HP otomatis masuk.
-    /// Mati = clipboard manager offline biasa (riwayat tetap dicatat); satu clip masih bisa dikirim lewat ⇧ + klik.
+    /// Mati = clipboard manager offline biasa (riwayat tetap dicatat); satu clip masih bisa dikirim lewat ⌃ + klik.
     var sharing: Bool { d.bool(forKey: "sharing") }
     var serverURL: URL? { d.string(forKey: "serverURL").flatMap(PasteServer.normalize) }
     var loggedIn: Bool { server.token != nil }
@@ -2091,7 +2094,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                               "historyPersist": true, "listen": true])
         d.removeObject(forKey: "token") // link Wi-Fi lokal lama (v0.1.x, token di ?t=) tidak berlaku lagi
         // "Kirim setiap copy otomatis" (≤ v1.7) digabung ke autosync: yang dulu mematikannya → autosync mati
-        // (copy di Mac tetap tidak terkirim otomatis; kirim satu clip lewat ⇧ + klik)
+        // (copy di Mac tetap tidak terkirim otomatis; kirim satu clip lewat ⌃ + klik)
         if d.object(forKey: "autoSend") != nil {
             if !d.bool(forKey: "autoSend") { d.set(false, forKey: "sharing") }
             d.removeObject(forKey: "autoSend")
@@ -2218,7 +2221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         if syncActive { push(clip) }
     }
 
-    /// Bisa mengirim satu clip dari menu (⇧ + klik)? Mode server cukup sudah login: saat autosync mati clip dikirim
+    /// Bisa mengirim satu clip dari menu (⌃ + klik)? Mode server cukup sudah login: saat autosync mati clip dikirim
     /// sekali saja (tanpa menyalakan autosync). Wi-Fi lokal butuh autosync aktif karena server kecil di Mac mati saat autosync mati.
     var canSendOne: Bool { lanMode ? syncActive : loggedIn }
 
@@ -2324,7 +2327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             "Kalau tidak, PasteLAN jadi clipboard manager biasa: semua copy hanya dicatat di riwayat Mac. " +
             "Kiriman dari HP tetap masuk riwayat Mac dan ditandai titik di ikon menu bar (\"Dengarkan kiriman dari server\", " +
             "bisa dimatikan). " +
-            "Satu clip tetap bisa dikirim kapan saja: tahan ⇧ (Shift) lalu klik clip itu di menu. " +
+            "Satu clip tetap bisa dikirim kapan saja: tahan ⌃ (Control) lalu klik clip itu di menu. " +
             "Bisa diubah kapan saja di menu atau Pengaturan."
         a.addButton(withTitle: "Nyalakan autosync")
         a.addButton(withTitle: "Offline saja")
@@ -2482,7 +2485,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     func menuNeedsUpdate(_ m: NSMenu) {
         menu.removeAllItems()
         updater.menuItem.menu?.removeItem(updater.menuItem)
-        searchField.stringValue = ""
+        if !keepSearch { searchField.stringValue = "" }
+        keepSearch = false
 
         addHistorySection()
         menu.addItem(.separator())
@@ -2491,7 +2495,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         sync.image = symbol("arrow.triangle.2.circlepath")
         sync.toolTip = "Nyala: setiap copy di Mac otomatis terkirim, kiriman dari HP otomatis masuk. " +
             (lanMode ? "Mati: clipboard manager offline biasa (server Wi-Fi lokal di Mac ikut mati). "
-                     : "Mati: clipboard manager offline biasa; tahan ⇧ lalu klik sebuah clip untuk mengirimnya. ") +
+                     : "Mati: clipboard manager offline biasa; tahan ⌃ lalu klik sebuah clip untuk mengirimnya. ") +
             "Saat dinyalakan lagi, hanya copy baru yang dikirim."
         if !lanMode, !sharing {
             // hanya relevan saat autosync mati (autosync sudah menerima sendiri)
@@ -2580,7 +2584,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             let fresh = unread.contains(c.id)
             if fresh { it.image = unreadDot } // clip baru dari server (Dengarkan server) yang belum dilihat
             it.toolTip = "Dari \(c.source)" + (fresh ? " · baru" : "") + (c.pending ? " · belum dikirim ke server / HP" : "") +
-                " · klik untuk menyalin ke clipboard Mac, tahan ⇧ untuk mengirim, tahan ⌥ untuk menghapus"
+                " · klik untuk menyalin ke clipboard Mac, tahan ⌃ untuk mengirim, tahan ⌥ untuk menghapus"
             // tahan ⌥ → baris ini berganti jadi "Hapus" (alternate item: harus tepat setelah item utamanya,
             // tombol pintas sama dengan modifier berbeda → ⌥⌘0–⌥⌘9 menghapus)
             let del = NSMenuItem(title: "Hapus: \(c.title)", action: #selector(deleteClip(_:)), keyEquivalent: it.keyEquivalent)
@@ -2590,10 +2594,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             del.representedObject = c.id
             del.image = symbol("trash")
             del.toolTip = "Hapus dari riwayat Mac ini (tidak menghapus di server / HP)"
-            // tahan ⇧ → "Kirim": kirim clip ini saja ke server / HP (berguna saat autosync mati)
+            // tahan ⌃ → "Kirim": kirim clip ini saja ke server / HP (berguna saat autosync mati)
             let send = NSMenuItem(title: canSendOne ? "Kirim: \(c.title)" : "Kirim (nyalakan autosync dulu): \(c.title)",
                                   action: #selector(sendClip(_:)), keyEquivalent: it.keyEquivalent)
-            send.keyEquivalentModifierMask = it.keyEquivalent.isEmpty ? [.shift] : [.command, .shift]
+            send.keyEquivalentModifierMask = it.keyEquivalent.isEmpty ? [.control] : [.command, .control]
             send.isAlternate = true
             send.isEnabled = canSendOne
             send.target = self
@@ -2619,7 +2623,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             }
         }
         if !list.isEmpty {
-            let tip = NSMenuItem(title: "Tahan ⇧ untuk mengirim clip · tahan ⌥ untuk menghapus", action: nil, keyEquivalent: "")
+            let tip = NSMenuItem(title: "Tahan ⌃ untuk mengirim clip · tahan ⌥ untuk menghapus", action: nil, keyEquivalent: "")
             tip.attributedTitle = NSAttributedString(string: tip.title, attributes: [
                 .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize), .foregroundColor: NSColor.tertiaryLabelColor])
             tip.isEnabled = false
@@ -2793,10 +2797,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         history.bump(id)
     }
     /// ⌥ + klik (atau ⌥⌘0–9): hapus satu clip dari riwayat Mac, tanpa konfirmasi; bisa diurungkan dari menu
-    /// ⇧ + klik: kirim satu clip ke server / HP (di mode server juga saat autosync mati), dengan notifikasi di HP
+    /// ⌃ + klik: kirim satu clip ke server / HP (di mode server juga saat autosync mati), dengan notifikasi di HP
     @objc func sendClip(_ s: NSMenuItem) {
         guard let id = s.representedObject as? Int, let c = history.clip(id) else { return }
-        if push(c, once: true, notify: true) { return flash() }
+        if push(c, once: true, notify: true) {
+            flash()
+            return reopenMenu()
+        }
         let a = NSAlert()
         a.messageText = "Clip tidak terkirim"
         if !canSendOne {
@@ -2811,6 +2818,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     @objc func deleteClip(_ s: NSMenuItem) {
         guard let id = s.representedObject as? Int, let r = history.take(id) else { return }
         lastDeleted = r
+        reopenMenu()
+    }
+    /// NSMenu selalu tertutup setelah item diklik → buka lagi di tempat yang sama (selagi ⌥ / ⌃ masih ditahan,
+    /// baris clip langsung tampil sebagai "Hapus" / "Kirim" lagi)
+    func reopenMenu() {
+        keepSearch = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.menuOpen else { return }
+            self.item.button?.performClick(nil)
+        }
     }
     @objc func undoDelete() {
         guard let r = lastDeleted else { return }
@@ -2902,15 +2919,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
 
         Riwayat: klik salah satu clip di bagian atas menu (atau tekan ⌘0–⌘9 saat menu terbuka) untuk menyalinnya \
         lagi ke clipboard Mac. Klik kotak "Cari clip…" di menu untuk mencari. \
-        Tahan ⇧ (Shift) lalu klik sebuah clip untuk mengirim clip itu saja ke server / HP (di mode server juga saat \
+        Tahan ⌃ (Control) lalu klik sebuah clip untuk mengirim clip itu saja ke server / HP (di mode server juga saat \
         autosync mati); HP yang mengaktifkan notifikasi di halaman PasteLAN mendapat notifikasi dengan tombol "Salin". \
         Tahan ⌥ (Option) lalu klik sebuah clip (atau ⌥⌘0–⌥⌘9) untuk menghapusnya dari riwayat Mac; \
-        "Urungkan hapus" di menu mengembalikannya. Jumlah clip yang diingat diatur di \
+        "Urungkan hapus" di menu mengembalikannya. Setelah menghapus / mengirim, menu langsung terbuka lagi, jadi \
+        selama ⌥ / ⌃ masih ditahan Anda bisa menghapus / mengirim banyak clip berturut-turut. Jumlah clip yang diingat diatur di \
         Pengaturan → Umum.
 
         Autosync: "Autosync dengan server & browser" di menu membuat setiap copy di Mac otomatis terkirim dan kiriman \
         dari HP otomatis masuk. Kalau dimatikan, PasteLAN jadi clipboard manager offline biasa: semua copy tetap masuk \
-        riwayat Mac, tapi tidak dikirim; satu clip masih bisa dikirim dengan ⇧ + klik. Saat dinyalakan lagi hanya copy \
+        riwayat Mac, tapi tidak dikirim; satu clip masih bisa dikirim dengan ⌃ + klik. Saat dinyalakan lagi hanya copy \
         baru yang dikirim; clip lama bisa dicentang lalu dikirim dari menu → "Clipboard manager".
 
         Dengarkan kiriman dari server (mode server, saat autosync mati): Mac tetap menerima kiriman dari HP / browser \
@@ -3381,7 +3399,7 @@ final class SettingsWindow: NSObject {
             Form.section("Autosync", [
                 Form.row(syncTitle, "Nyala = setiap copy di Mac otomatis terkirim dan kiriman dari HP otomatis masuk. " +
                          "Mati = clipboard manager offline biasa; semua copy tetap masuk riwayat, dan satu clip masih bisa " +
-                         "dikirim dengan ⇧ + klik di menu (mode server). Saat dinyalakan lagi hanya copy baru yang dikirim; clip lama bisa " +
+                         "dikirim dengan ⌃ + klik di menu (mode server). Saat dinyalakan lagi hanya copy baru yang dikirim; clip lama bisa " +
                          "dikirim dari tab Clipboard.", syncSwitch),
                 Form.row("Dengarkan kiriman dari server", "Saat autosync mati (mode server): Mac tetap tersambung ke server " +
                          "tanpa mengirim copy di Mac. Kiriman dari HP / browser masuk riwayat (clipboard Mac tidak ditimpa) dan " +
