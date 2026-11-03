@@ -290,6 +290,20 @@ final class LocalClip {
     var status: String { !from.isEmpty ? "Diterima" : synced ? "Terkirim" : "Hanya di Mac" }
     var pending: Bool { from.isEmpty && !synced }
 
+    /// Isi teks untuk pratinjau di tooltip menu: dibatasi supaya tooltip tidak memenuhi layar
+    /// (maks. `maxLines` baris / `maxChars` karakter, sisanya diganti "…"). nil untuk gambar / teks kosong.
+    func previewText(maxLines: Int = 25, maxChars: Int = 1500) -> String? {
+        guard kind == "text", let t = text, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        var out = String(t.prefix(maxChars))
+        var cut = out.count < t.count
+        let lines = out.components(separatedBy: "\n")
+        if lines.count > maxLines {
+            out = lines.prefix(maxLines).joined(separator: "\n")
+            cut = true
+        }
+        return cut ? out + "\n…" : out
+    }
+
     /// Cocok dengan kata pencarian (isi teks; gambar cocok dengan "gambar" / jenis filenya)
     func matches(_ query: String) -> Bool {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2759,6 +2773,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             if fresh { it.image = unreadDot } // clip baru dari server (Dengarkan server) yang belum dilihat
             it.toolTip = "Dari \(c.source)" + (fresh ? " · baru" : "") + (c.pending ? " · belum dikirim ke server / HP" : "") +
                 " · klik untuk menyalin ke clipboard Mac, tahan ⌃ untuk mengirim, tahan ⌥ untuk menghapus"
+            // teks: isi lengkap (dibatasi) tampil di atas, catatan aksi tetap di bagian paling bawah
+            if let full = c.previewText(), let tip = it.toolTip {
+                it.toolTip = full + "\n\n" + tip
+            }
             // gambar yang isinya sudah ada di Mac: catatan ini tampil di panel pratinjau (bersama gambarnya)
             if c.kind == "image", c.data != nil, let tip = it.toolTip {
                 hoverTips[c.id] = tip
