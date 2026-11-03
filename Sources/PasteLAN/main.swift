@@ -2061,15 +2061,21 @@ final class PlainTextField: NSTextField {
 // MARK: - Pratinjau gambar saat clip gambar di menu di-hover
 
 /// Panel kecil di samping menu: thumbnail gambar + catatan yang sama dengan tooltip baris clip.
+/// Clip teks juga memakai panel ini (isi teks + catatan), bukan tooltip biasa: tooltip macOS yang tinggi bisa
+/// terpotong di atas layar, sedangkan panel ini selalu dijaga tetap di dalam layar (`place()`).
 /// Menu bar macOS menahan semua klik selama menu terbuka, jadi klik di panel ini dikenali saat menu tertutup
 /// (`menuDidClose`: posisi mouse ada di dalam panel) → jendela pratinjau ukuran penuh dibuka.
 final class ImageHoverPanel {
     static let thumb: CGFloat = 240
+    static let textWidth: CGFloat = 360 // lebar panel untuk clip teks
     private let panel: NSPanel
     private let imageView = NSImageView()
     private lazy var imageWidth = imageView.widthAnchor.constraint(equalToConstant: ImageHoverPanel.thumb)
     private lazy var imageHeight = imageView.heightAnchor.constraint(equalToConstant: ImageHoverPanel.thumb)
     private let note = Form.note("", width: ImageHoverPanel.thumb)
+    private let body = NSTextField(wrappingLabelWithString: "") // isi clip teks
+    private let hint = Form.note("Klik gambar untuk pratinjau", width: ImageHoverPanel.thumb)
+    private var stackWidth: NSLayoutConstraint?
     private var thumbs: [Int: NSImage] = [:] // gambar yang sudah dibaca selama menu terbuka (dikosongkan saat menu tutup)
     private(set) var clipID: Int?
     private var previews: [NSWindow] = []
@@ -2093,9 +2099,12 @@ final class ImageHoverPanel {
         bg.layer?.masksToBounds = true
         imageView.imageScaling = .scaleProportionallyDown
         imageView.translatesAutoresizingMaskIntoConstraints = false
-        let hint = Form.note("Klik gambar untuk pratinjau", width: ImageHoverPanel.thumb)
         hint.textColor = .tertiaryLabelColor
-        let stack = Form.stack([imageView, note, hint], spacing: 6)
+        body.font = .systemFont(ofSize: 12)
+        body.textColor = .labelColor
+        body.maximumNumberOfLines = 24 // baris tampilan (termasuk baris panjang yang dibungkus), sisanya "…"
+        body.cell?.truncatesLastVisibleLine = true
+        let stack = Form.stack([imageView, body, note, hint], spacing: 6)
         stack.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -2103,8 +2112,9 @@ final class ImageHoverPanel {
             stack.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -10),
             stack.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 10),
             stack.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -10),
-            stack.widthAnchor.constraint(equalToConstant: ImageHoverPanel.thumb),
         ])
+        stackWidth = stack.widthAnchor.constraint(equalToConstant: ImageHoverPanel.thumb)
+        stackWidth?.isActive = true
         NSLayoutConstraint.activate([imageWidth, imageHeight])
         panel.contentView = bg
     }
@@ -2113,8 +2123,13 @@ final class ImageHoverPanel {
 
     /// Tampilkan gambar clip `c` di samping menu; `tip` = teks tooltip baris clip
     func show(_ c: LocalClip, tip: String) {
+        if let full = c.previewText() { return showText(c.id, full, tip: tip) }
         guard c.kind == "image", let img = image(c) else { return hide() }
         clipID = c.id
+        setWidth(ImageHoverPanel.thumb)
+        imageView.isHidden = false
+        body.isHidden = true
+        hint.isHidden = false
         imageView.image = img
         let s = img.size
         let scale = min(1, ImageHoverPanel.thumb / max(s.width, 1), ImageHoverPanel.thumb / max(s.height, 1))
@@ -2125,6 +2140,26 @@ final class ImageHoverPanel {
         panel.setContentSize(panel.contentView?.fittingSize ?? panel.frame.size)
         place()
         panel.orderFrontRegardless()
+    }
+
+    /// Clip teks: isi teks (dibatasi) di atas, catatan aksi di bawah; tanpa petunjuk klik (tidak ada pratinjau)
+    private func showText(_ id: Int, _ full: String, tip: String) {
+        clipID = id
+        setWidth(ImageHoverPanel.textWidth)
+        imageView.isHidden = true
+        body.isHidden = false
+        hint.isHidden = true
+        body.stringValue = full
+        note.stringValue = tip
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.setContentSize(panel.contentView?.fittingSize ?? panel.frame.size)
+        place()
+        panel.orderFrontRegardless()
+    }
+
+    private func setWidth(_ w: CGFloat) {
+        stackWidth?.constant = w
+        for l in [body, note, hint] { l.preferredMaxLayoutWidth = w }
     }
 
     func hide() {
@@ -2214,6 +2249,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     /// Thumbnail + catatan saat clip gambar di menu di-hover; klik → pratinjau
     let imageHover = ImageHoverPanel()
     /// Catatan tooltip per clip gambar (ditampilkan di panel `imageHover`, bukan tooltip biasa supaya tidak dobel)
+    /// — juga clip teks: isi teksnya tampil di panel yang sama
     var hoverTips: [Int: String] = [:]
     /// Setelah hapus (⌥) / kirim (⌃) dari menu: menu dibuka lagi (kotak cari tidak dikosongkan) supaya bisa
     /// menghapus / mengirim banyak clip dengan cepat tanpa membuka menu berulang kali
@@ -2774,8 +2810,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             it.toolTip = "Dari \(c.source)" + (fresh ? " · baru" : "") + (c.pending ? " · belum dikirim ke server / HP" : "") +
                 " · klik untuk menyalin ke clipboard Mac, tahan ⌃ untuk mengirim, tahan ⌥ untuk menghapus"
             // teks: isi lengkap (dibatasi) tampil di atas, catatan aksi tetap di bagian paling bawah
-            if let full = c.previewText(), let tip = it.toolTip {
-                it.toolTip = full + "\n\n" + tip
+            // (di panel `imageHover`, bukan tooltip biasa yang bisa terpotong di atas layar)
+            if c.previewText() != nil, let tip = it.toolTip {
+                hoverTips[c.id] = tip
+                it.toolTip = nil
             }
             // gambar yang isinya sudah ada di Mac: catatan ini tampil di panel pratinjau (bersama gambarnya)
             if c.kind == "image", c.data != nil, let tip = it.toolTip {
