@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<title>PasteLAN — Teaser</title>
+<!--
+  Sumber video teaser. Setiap frame ditentukan murni oleh waktu t (detik) lewat window.seek(t),
+  jadi render.js bisa memotret frame demi frame secara deterministik (tanpa requestAnimationFrame).
+  Buka langsung di browser untuk pratinjau: animasi berjalan otomatis bila tidak ada ?render.
+-->
+<style>
+  :root { --blue: #007aff; --green: #34c759; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: #050a18; }
+  body { font-family: "Inter", system-ui, sans-serif; color: #fff; -webkit-font-smoothing: antialiased; }
+  #stage { position: absolute; inset: 0; overflow: hidden; }
+
+  .bg { position: absolute; inset: -20%; filter: blur(90px); }
+  .blob { position: absolute; border-radius: 50%; opacity: .55; }
+  .b1 { width: 1000px; height: 1000px; background: #0a4bd6; }
+  .b2 { width: 850px; height: 850px; background: #0e7490; opacity: .45; }
+  .b3 { width: 750px; height: 750px; background: #4338ca; opacity: .4; }
+  .vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,.6) 100%); }
+
+  .scene { position: absolute; inset: 0; opacity: 0; }
+  .title { position: absolute; left: 0; right: 0; text-align: center; font-family: "Inter Display", "Inter", sans-serif;
+           font-weight: 800; letter-spacing: -0.03em; }
+  .sub { position: absolute; left: 0; right: 0; text-align: center; font-weight: 500; color: rgba(255,255,255,.72); }
+
+  /* Ikon aplikasi: dua panah biru seperti icon-192.png */
+  .icon { position: absolute; width: 220px; height: 220px; border-radius: 52px; background: var(--blue);
+          box-shadow: 0 40px 120px rgba(0,122,255,.5), inset 0 2px 0 rgba(255,255,255,.2); }
+  .icon svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  .caption { position: absolute; left: 0; right: 0; text-align: center; font-family: "Inter Display", "Inter", sans-serif;
+             font-weight: 800; font-size: 72px; letter-spacing: -0.03em; line-height: 1.08; }
+  .caption small { display: block; font-family: "Inter", sans-serif; font-weight: 500; font-size: 30px; letter-spacing: 0;
+                   color: rgba(255,255,255,.72); margin-top: 16px; }
+
+  /* Jendela Mac tiruan */
+  .mac { position: absolute; width: 900px; height: 560px; border-radius: 22px; background: #1c1f26;
+         border: 1px solid rgba(255,255,255,.12); box-shadow: 0 50px 140px rgba(0,0,0,.55); overflow: hidden; }
+  .mac .tb { height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 20px; background: #262a33; }
+  .mac .tb i { width: 14px; height: 14px; border-radius: 50%; display: block; }
+  .mac .tb span { margin-left: 16px; font-size: 20px; color: rgba(255,255,255,.55); }
+  .mac .body { padding: 40px 44px; font-size: 30px; line-height: 1.6; color: rgba(255,255,255,.85); }
+  .hl { border-radius: 6px; padding: 2px 4px; }
+  .keys { position: absolute; display: flex; gap: 12px; }
+  .key { min-width: 86px; height: 86px; padding: 0 18px; border-radius: 18px; background: #f5f5f7; color: #1d1d1f;
+         font-size: 44px; font-weight: 600; display: grid; place-items: center; box-shadow: 0 8px 0 #b7b7bd, 0 20px 40px rgba(0,0,0,.35); }
+
+  /* Menu clipboard di Mac */
+  .menu { position: absolute; width: 560px; border-radius: 16px; background: rgba(40,44,54,.97); border: 1px solid rgba(255,255,255,.14);
+          box-shadow: 0 30px 80px rgba(0,0,0,.5); padding: 10px; font-size: 24px; }
+  .menu .it { display: flex; justify-content: space-between; padding: 12px 16px; border-radius: 10px; color: rgba(255,255,255,.9); }
+  .menu .it kbd { font-family: inherit; color: rgba(255,255,255,.45); }
+  .menu .it.on { background: var(--blue); color: #fff; }
+  .menu .it.on kbd { color: rgba(255,255,255,.8); }
+  .menu .sep { height: 1px; background: rgba(255,255,255,.12); margin: 8px 6px; }
+  .menu .muted { color: rgba(255,255,255,.55); }
+
+  /* HP tiruan */
+  .phone { position: absolute; width: 440px; height: 760px; border-radius: 64px; background: #f2f2f7; color: #1d1d1f;
+           border: 12px solid #111; box-shadow: 0 50px 140px rgba(0,0,0,.6); overflow: hidden; }
+  .phone .hd { display: flex; align-items: center; gap: 12px; padding: 64px 28px 18px; font-size: 30px; font-weight: 700;
+               border-bottom: 1px solid #ddd; background: #f6f6f8; }
+  .phone .hd .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--green); }
+  .phone .hd .st { margin-left: auto; font-size: 18px; font-weight: 500; color: #8a8a8e; }
+  .phone .pad { padding: 20px; }
+  .pcard { background: #fff; border: 1px solid #e3e3e8; border-radius: 22px; padding: 18px; margin-bottom: 16px; }
+  .pcard .meta { display: flex; justify-content: space-between; font-size: 16px; color: #8a8a8e; }
+  .pcard .txt { font-size: 22px; margin: 10px 0 14px; line-height: 1.35; word-break: break-word; }
+  .pbtn { height: 52px; border-radius: 14px; background: var(--blue); color: #fff; font-size: 22px; font-weight: 600;
+          display: grid; place-items: center; }
+  .pbtn.ghost { background: #fff; color: var(--blue); border: 1px solid #ddd; }
+  .ta { border: 1px solid #d8d8de; border-radius: 16px; height: 110px; padding: 14px; font-size: 20px; color: #1d1d1f; }
+  .ta.ph { color: #9a9aa0; }
+  .row2 { display: flex; gap: 10px; margin-top: 12px; }
+  .row2 .pbtn { flex: 1; }
+  .label { font-size: 16px; font-weight: 700; color: #6e6e73; letter-spacing: .06em; margin: 8px 6px 12px; }
+
+  .flyer { position: absolute; padding: 14px 22px; border-radius: 16px; background: var(--blue); font-size: 24px; font-weight: 600;
+           box-shadow: 0 20px 50px rgba(0,122,255,.5); white-space: nowrap; opacity: 0; z-index: 6; }
+  .tap { position: absolute; width: 70px; height: 70px; margin: -35px 0 0 -35px; border-radius: 50%; background: rgba(0,0,0,.18);
+         border: 3px solid rgba(0,0,0,.35); opacity: 0; z-index: 7; }
+
+  .shot { position: absolute; border-radius: 40px; overflow: hidden; box-shadow: 0 50px 140px rgba(0,0,0,.6);
+          border: 10px solid #111; }
+  .shot img { display: block; width: 100%; height: auto; }
+
+  .features { position: absolute; left: 50%; top: 450px; width: 1500px; transform: translateX(-50%);
+              display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; }
+  .feat { padding: 34px 36px; border-radius: 28px; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14); opacity: 0; }
+  .feat .e { font-size: 46px; margin-bottom: 18px; }
+  .feat h3 { font-size: 34px; font-weight: 700; letter-spacing: -0.01em; }
+  .feat p { font-size: 24px; color: rgba(255,255,255,.66); margin-top: 8px; line-height: 1.35; }
+  .badge { position: absolute; left: 0; right: 0; margin: 0 auto; width: fit-content; padding: 12px 26px; border-radius: 999px;
+           border: 1px solid rgba(255,255,255,.22); font-size: 26px; color: rgba(255,255,255,.8); font-weight: 500; white-space: nowrap; }
+  .fade { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; z-index: 20; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="bg"><div class="blob b1" id="b1"></div><div class="blob b2" id="b2"></div><div class="blob b3" id="b3"></div></div>
+  <div class="vignette"></div>
+
+  <!-- 1. Pembuka -->
+  <section class="scene" id="s1">
+    <div class="icon" id="s1icon" style="left:850px; top:290px">
+      <svg viewBox="0 0 64 64"><g fill="none" stroke="#fff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+        <path id="s1a1" d="M46 25H18m8-8-8 8 8 8"/><path id="s1a2" d="M18 40h28m-8-8 8 8-8 8"/></g></svg>
+    </div>
+    <div class="title" id="s1title" style="top:560px; font-size:140px">PasteLAN</div>
+    <div class="sub" id="s1sub" style="top:735px; font-size:44px">Copy di Mac. Paste di HP. Dan sebaliknya.</div>
+  </section>
+
+  <!-- 2. Mac → HP -->
+  <section class="scene" id="s2">
+    <div class="caption" id="s2cap" style="top:70px">Mac → HP, dalam ±1 detik.<small>Setiap ⌘C muncul otomatis di HP — teks maupun gambar.</small></div>
+    <div class="mac" id="s2mac" style="left:150px; top:330px">
+      <div class="tb"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><span>Catatan</span></div>
+      <div class="body">Link repo buat dicoba di HP:<br><span class="hl" id="s2hl">github.com/kikiraihan/mac-os-PasteLAN</span><br><span style="color:rgba(255,255,255,.45)">Jangan lupa install PWA-nya.</span></div>
+    </div>
+    <div class="keys" id="s2keys" style="left:470px; top:780px"><div class="key" id="k1">⌘</div><div class="key" id="k2">C</div></div>
+    <div class="flyer" id="s2fly">📋 github.com/kikiraihan/…</div>
+    <div class="phone" id="s2phone" style="left:1290px; top:280px">
+      <div class="hd"><span class="dot"></span>PasteLAN<span class="st">Terhubung</span></div>
+      <div class="pad">
+        <div class="label">CLIPBOARD</div>
+        <div class="pcard" id="s2new"><div class="meta"><span>Dari MacBook Air</span><span>10.31</span></div>
+          <div class="txt">https://github.com/kikiraihan/mac-os-PasteLAN</div><div class="pbtn" id="s2salin">Salin</div></div>
+        <div class="pcard" id="s2old"><div class="meta"><span>Dari MacBook Air</span><span>10.12</span></div>
+          <div class="txt">Rapat dipindah ke jam 2 siang, ruang Meranti.</div><div class="pbtn">Salin</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. HP → Mac -->
+  <section class="scene" id="s3">
+    <div class="caption" id="s3cap" style="top:70px">HP → Mac: tempel, Kirim, ⌘V.<small>Teks atau beberapa gambar sekaligus.</small></div>
+    <div class="phone" id="s3phone" style="left:230px; top:280px">
+      <div class="hd"><span class="dot"></span>PasteLAN<span class="st">Terhubung</span></div>
+      <div class="pad">
+        <div class="pcard">
+          <div class="ta" id="s3ta"></div>
+          <div class="row2"><div class="pbtn" id="s3kirim">Kirim</div><div class="pbtn ghost">Kirim gambar</div></div>
+        </div>
+        <div class="label">CLIPBOARD</div>
+        <div class="pcard"><div class="meta"><span>Dari MacBook Air</span><span>10.31</span></div>
+          <div class="txt">https://github.com/kikiraihan/mac-os-PasteLAN</div><div class="pbtn">Salin</div></div>
+      </div>
+    </div>
+    <div class="tap" id="s3tap"></div>
+    <div class="flyer" id="s3fly">📋 Kode OTP: 482 913</div>
+    <div class="menu" id="s3menu" style="left:1100px; top:330px">
+      <div class="it on" id="s3top" style="opacity:0"><span>Kode OTP: 482 913</span><kbd>⌘0</kbd></div>
+      <div class="it"><span>https://github.com/kikiraihan/mac…</span><kbd id="s3k1">⌘0</kbd></div>
+      <div class="it"><span>Rapat dipindah ke jam 2 siang…</span><kbd id="s3k2">⌘1</kbd></div>
+      <div class="it"><span>🖼 Gambar 1284 × 2778</span><kbd id="s3k3">⌘2</kbd></div>
+      <div class="it"><span>ssh deploy@vps -p 2222</span><kbd id="s3k4">⌘3</kbd></div>
+      <div class="sep"></div>
+      <div class="it muted"><span>🔍 Cari clip…</span></div>
+      <div class="it muted"><span>Buka PasteLAN di browser</span></div>
+      <div class="it muted"><span>Pengaturan…</span><kbd>⌘,</kbd></div>
+    </div>
+    <div class="keys" id="s3keys" style="left:1290px; top:860px"><div class="key" id="k3">⌘</div><div class="key" id="k4">V</div></div>
+  </section>
+
+  <!-- 4. PWA (screenshot asli) -->
+  <section class="scene" id="s4">
+    <div class="caption" id="s4cap" style="top:380px; left:120px; right:auto; width:760px; text-align:left">Install di HP<br>seperti aplikasi.<small>PWA untuk iPhone & Android,<br>terang maupun gelap.</small></div>
+    <div class="shot" id="s4a" style="left:960px; top:110px; width:400px"><img src="../../docs/screenshots/hp-light.png" alt=""></div>
+    <div class="shot" id="s4b" style="left:1400px; top:170px; width:400px"><img src="../../docs/screenshots/hp-dark.png" alt=""></div>
+  </section>
+
+  <!-- 5. Fitur -->
+  <section class="scene" id="s5">
+    <div class="title" id="s5title" style="top:150px; font-size:96px">Milikmu sepenuhnya.</div>
+    <div class="features">
+      <div class="feat"><div class="e">🖥️</div><h3>Server sendiri</h3><p>Satu binary Go, tanpa dependensi & database.</p></div>
+      <div class="feat"><div class="e">📶</div><h3>Atau Wi-Fi lokal</h3><p>Tanpa server: scan QR, isi dienkripsi ChaCha20.</p></div>
+      <div class="feat"><div class="e">📋</div><h3>Clipboard manager</h3><p>Riwayat di menu bar, ⌘0–⌘9, cari clip.</p></div>
+      <div class="feat"><div class="e">🔔</div><h3>Notifikasi di HP</h3><p>⌃ + klik untuk mengirim satu clip.</p></div>
+      <div class="feat"><div class="e">🧠</div><h3>Hanya di RAM</h3><p>Server tidak menyimpan isi clipboard ke disk.</p></div>
+      <div class="feat"><div class="e">✍️</div><h3>Update bertanda tangan</h3><p>Rilis diverifikasi dengan Ed25519.</p></div>
+    </div>
+  </section>
+
+  <!-- 6. Penutup -->
+  <section class="scene" id="s6">
+    <div class="icon" id="s6icon" style="left:880px; top:250px; width:160px; height:160px; border-radius:38px">
+      <svg viewBox="0 0 64 64"><g fill="none" stroke="#fff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M46 25H18m8-8-8 8 8 8"/><path d="M18 40h28m-8-8 8 8-8 8"/></g></svg>
+    </div>
+    <div class="title" id="s6title" style="top:450px; font-size:150px">PasteLAN</div>
+    <div class="sub" id="s6sub" style="top:640px; font-size:44px">Satu clipboard untuk Mac dan HP.</div>
+    <div class="badge" id="s6badge" style="top:760px">macOS · iPhone · Android — self-hosted</div>
+  </section>
+
+  <div class="fade" id="fade"></div>
+</div>
+
+<script>
+  // ---- Pembantu animasi ----
+  const DURATION = 28;
+  const TOTAL = DURATION + 1.5; // tahan logo sejenak sebelum layar gelap
+  const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+  const prog = (t, a, b) => clamp((t - a) / (b - a));
+  const easeOut = (x) => 1 - Math.pow(1 - x, 3);
+  const easeInOut = (x) => (x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+  const back = (x) => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+  const lerp = (a, b, x) => a + (b - a) * x;
+  const $ = (id) => document.getElementById(id);
+  function sceneAlpha(t, a, b, fi = .5, fo = .5) {
+    return Math.min(easeOut(prog(t, a, a + fi)), 1 - easeInOut(prog(t, b - fo, b)));
+  }
+  function show(el, alpha) { el.style.opacity = alpha; el.style.visibility = alpha <= 0.001 ? 'hidden' : 'visible'; }
+  function rise(el, t, start, dur = .7, dist = 40) {
+    const x = easeOut(prog(t, start, start + dur));
+    el.style.opacity = x;
+    el.style.transform = `translateY(${(1 - x) * dist}px)`;
+  }
+  // tombol keyboard ditekan sebentar di sekitar waktu `at`
+  function press(el, t, at) {
+    const d = prog(t, at, at + .12) - prog(t, at + .35, at + .5);
+    el.style.transform = `translateY(${d * 8}px)`;
+    el.style.boxShadow = `0 ${8 - d * 8}px 0 #b7b7bd, 0 20px 40px rgba(0,0,0,.35)`;
+  }
+  // terbang melengkung dari (x1,y1) ke (x2,y2)
+  function fly(el, t, a, b, x1, y1, x2, y2) {
+    const k = easeInOut(prog(t, a, b));
+    const arc = Math.sin(k * Math.PI) * -140;
+    el.style.left = lerp(x1, x2, k) + 'px';
+    el.style.top = (lerp(y1, y2, k) + arc) + 'px';
+    el.style.opacity = t > a && t < b + .05 ? Math.min(1, prog(t, a, a + .15) * 1) * (1 - prog(t, b - .1, b + .05)) : 0;
+    el.style.transform = `scale(${lerp(.9, .75, k)})`;
+  }
+
+  const OTP = 'Kode OTP: 482 913';
+
+  // ---- Linimasa (detik) ----
+  // s1 0–3.5 · s2 3.5–10.5 · s3 10.5–17.5 · s4 17.5–21.5 · s5 21.5–25.5 · s6 25.5–akhir
+  window.seek = function (t) {
+    $('b1').style.transform = `translate(${200 + Math.sin(t * .25) * 200}px, ${200 + Math.cos(t * .2) * 150}px)`;
+    $('b2').style.transform = `translate(${1250 + Math.cos(t * .22) * 220}px, ${450 + Math.sin(t * .3) * 160}px)`;
+    $('b3').style.transform = `translate(${800 + Math.sin(t * .18 + 2) * 300}px, ${900 + Math.cos(t * .25) * 120}px)`;
+
+    // 1. Pembuka
+    {
+      show($('s1'), sceneAlpha(t, 0, 3.5, .01, .6));
+      const ic = back(prog(t, .2, 1.0));
+      $('s1icon').style.transform = `scale(${ic}) rotate(${(1 - ic) * -12}deg)`;
+      $('s1icon').style.opacity = clamp(ic * 2);
+      $('s1a1').style.transform = `translateX(${(1 - easeOut(prog(t, .7, 1.3))) * 14}px)`;
+      $('s1a2').style.transform = `translateX(${(1 - easeOut(prog(t, .9, 1.5))) * -14}px)`;
+      rise($('s1title'), t, 1.0, .8, 50);
+      rise($('s1sub'), t, 1.6, .8, 30);
+    }
+
+    // 2. Mac → HP
+    {
+      show($('s2'), sceneAlpha(t, 3.5, 10.5, .5, .6));
+      rise($('s2cap'), t, 3.6, .7, 30);
+      rise($('s2mac'), t, 3.7, .7, 50);
+      rise($('s2phone'), t, 3.9, .7, 50);
+      // teks diseleksi, lalu ⌘C
+      const sel = prog(t, 4.8, 5.4);
+      $('s2hl').style.background = `linear-gradient(90deg, rgba(0,122,255,.55) ${sel * 100}%, transparent ${sel * 100}%)`;
+      rise($('s2keys'), t, 5.4, .4, 20);
+      press($('k1'), t, 5.8); press($('k2'), t, 5.95);
+      $('s2keys').style.opacity = Math.min(easeOut(prog(t, 5.4, 5.8)), 1 - prog(t, 7.0, 7.4));
+      fly($('s2fly'), t, 6.3, 7.3, 560, 520, 1330, 420);
+      // kartu baru muncul di atas, kartu lama turun
+      const n = easeOut(prog(t, 7.2, 7.7));
+      // kartu baru tumbuh dari tinggi 0, kartu lama ikut terdorong ke bawah
+      $('s2new').style.opacity = n;
+      $('s2new').style.overflow = 'hidden';
+      $('s2new').style.maxHeight = `${n * 260}px`;
+      $('s2new').style.paddingTop = $('s2new').style.paddingBottom = `${n * 18}px`;
+      $('s2new').style.marginBottom = `${n * 16}px`;
+      $('s2new').style.borderWidth = n > 0 ? '1px' : '0';
+      $('s2salin').style.background = t > 8.6 && t < 9.6 ? '#34c759' : '';
+      $('s2salin').textContent = t > 8.6 && t < 9.6 ? '✓ Disalin' : 'Salin';
+    }
+
+    // 3. HP → Mac
+    {
+      show($('s3'), sceneAlpha(t, 10.5, 17.5, .5, .6));
+      rise($('s3cap'), t, 10.6, .7, 30);
+      rise($('s3phone'), t, 10.7, .7, 50);
+      rise($('s3menu'), t, 11.0, .7, 30);
+      const n = Math.round(OTP.length * prog(t, 11.6, 12.8));
+      $('s3ta').textContent = n ? OTP.slice(0, n) : 'Tempel teks di sini, lalu kirim…';
+      $('s3ta').classList.toggle('ph', !n);
+      // ketuk Kirim
+      const kb = $('s3kirim').getBoundingClientRect();
+      const tp = prog(t, 13.0, 13.5);
+      $('s3tap').style.left = (kb.left + kb.width / 2) + 'px';
+      $('s3tap').style.top = (kb.top + kb.height / 2) + 'px';
+      $('s3tap').style.opacity = tp > 0 && tp < 1 ? 1 - tp : 0;
+      $('s3tap').style.transform = `scale(${.5 + tp * .8})`;
+      $('s3kirim').style.filter = tp > 0 && tp < .6 ? 'brightness(.85)' : '';
+      if (t > 13.3) { $('s3ta').textContent = 'Tempel teks di sini, lalu kirim…'; $('s3ta').classList.add('ph'); }
+      fly($('s3fly'), t, 13.3, 14.3, 560, 500, 1120, 330);
+      // item baru masuk ke paling atas riwayat, nomor pintasan ikut bergeser
+      const top = easeOut(prog(t, 14.2, 14.7));
+      $('s3top').style.opacity = top;
+      $('s3top').style.overflow = 'hidden';
+      $('s3top').style.maxHeight = `${top * 60}px`;
+      $('s3top').style.paddingTop = $('s3top').style.paddingBottom = `${top * 12}px`;
+      ['s3k1', 's3k2', 's3k3', 's3k4'].forEach((id, i) => { $(id).textContent = '⌘' + (t > 14.3 ? i + 1 : i); });
+      rise($('s3keys'), t, 15.0, .4, 20);
+      $('s3keys').style.opacity = Math.min(easeOut(prog(t, 15.0, 15.4)), 1 - prog(t, 16.6, 17.0));
+      press($('k3'), t, 15.5); press($('k4'), t, 15.65);
+    }
+
+    // 4. PWA
+    {
+      show($('s4'), sceneAlpha(t, 17.5, 21.5, .6, .6));
+      const x = easeOut(prog(t, 17.6, 18.6));
+      $('s4cap').style.opacity = x;
+      $('s4cap').style.transform = `translateX(${(1 - x) * -60}px)`;
+      const k = prog(t, 17.5, 21.5);
+      $('s4a').style.transform = `translateY(${(1 - easeOut(prog(t, 17.7, 18.7))) * 120 - k * 30}px) rotate(-3deg)`;
+      $('s4b').style.transform = `translateY(${(1 - easeOut(prog(t, 17.9, 18.9))) * 120 + k * 30}px) rotate(3deg)`;
+      $('s4a').style.opacity = easeOut(prog(t, 17.7, 18.3));
+      $('s4b').style.opacity = easeOut(prog(t, 17.9, 18.5));
+    }
+
+    // 5. Fitur
+    {
+      show($('s5'), sceneAlpha(t, 21.5, 25.7, .5, .6));
+      rise($('s5title'), t, 21.6, .7, 30);
+      document.querySelectorAll('.feat').forEach((el, i) => rise(el, t, 22.0 + i * .15, .6, 30));
+    }
+
+    // 6. Penutup
+    {
+      show($('s6'), sceneAlpha(t, 25.5, TOTAL + 10, .6, .1));
+      $('s6icon').style.transform = `scale(${back(prog(t, 25.6, 26.3))})`;
+      rise($('s6title'), t, 25.9, .7, 40);
+      rise($('s6sub'), t, 26.3, .7, 24);
+      rise($('s6badge'), t, 26.6, .7, 16);
+    }
+
+    // Layar meredup di akhir
+    $('fade').style.opacity = easeInOut(prog(t, TOTAL - .6, TOTAL));
+  };
+  window.DURATION = TOTAL;
+
+  // Pratinjau di browser (tanpa ?render)
+  if (!location.search.includes('render')) {
+    const t0 = performance.now();
+    const loop = () => { window.seek(((performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+    loop();
+  } else {
+    window.seek(0);
+  }
+</script>
+</body>
+</html>
