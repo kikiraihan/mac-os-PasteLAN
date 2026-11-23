@@ -2254,8 +2254,8 @@ final class ShortcutRecorder: NSButton {
     private(set) var recording = false
     private var monitor: Any?
 
-    init() {
-        super.init(frame: .zero)
+    override init(frame: NSRect) {
+        super.init(frame: frame)
         bezelStyle = .rounded
         target = self
         action = #selector(clicked)
@@ -4106,7 +4106,7 @@ final class SettingsWindow: NSObject {
     private lazy var menuSwitches: [NSSwitch] = AppDelegate.menuLinks.map { _ in Form.toggle(self, #selector(menuLinkChanged(_:))) }
     // kontrol tab Pintasan
     private lazy var recorders: [(ShortcutAction, ShortcutRecorder)] = ShortcutAction.allCases.map { a in
-        let r = ShortcutRecorder()
+        let r = ShortcutRecorder(frame: .zero)
         r.onChange = { [weak self] s in self?.app.setShortcut(s, for: a) ?? false }
         // selama merekam, pintasan global dilepas supaya kombinasi yang sudah terdaftar bisa direkam ulang
         r.onRecording = { [weak self] on in
