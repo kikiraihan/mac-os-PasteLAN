@@ -13,6 +13,7 @@ import CoreImage
 import Security
 import SystemConfiguration
 import ServiceManagement
+import Carbon // RegisterEventHotKey: pintasan global tanpa izin Aksesibilitas
 
 // MARK: - Utilitas
 
@@ -269,9 +270,10 @@ final class LocalClip {
     var time: Date
     var serverID: Int? // id item di server PasteLAN (kalau ada di sana)
     var synced: Bool   // sudah dikirim ke / diterima dari server atau HP
+    var pinned: Date?  // waktu disematkan; nil = tidak disematkan (clip sematan tidak terbuang oleh batas riwayat)
 
     init(id: Int, kind: String, text: String?, data: Data?, mime: String?, size: Int, from: String, time: Date,
-         serverID: Int?, synced: Bool) {
+         serverID: Int?, synced: Bool, pinned: Date? = nil) {
         self.id = id
         self.kind = kind
         self.text = text
@@ -282,6 +284,7 @@ final class LocalClip {
         self.time = time
         self.serverID = serverID
         self.synced = synced
+        self.pinned = pinned
     }
 
     /// Cuplikan satu baris untuk menu & tabel
@@ -369,6 +372,19 @@ final class History {
 
     func clip(_ id: Int) -> LocalClip? { items.first { $0.id == id } }
 
+    /// Clip yang disematkan, urut sesuai waktu disematkan (tetap, tidak berubah saat clip disalin lagi)
+    var pinnedItems: [LocalClip] {
+        items.filter { $0.pinned != nil }.sorted { ($0.pinned ?? .distantPast) < ($1.pinned ?? .distantPast) }
+    }
+
+    /// Sematkan / lepas sematan. Clip sematan tidak dihitung dalam batas riwayat dan tidak ikut "Hapus riwayat".
+    func togglePin(_ id: Int) {
+        guard let c = clip(id) else { return }
+        c.pinned = c.pinned == nil ? Date() : nil
+        trim()
+        onChange?()
+    }
+
     /// Isi dari HistoryStore saat aplikasi dibuka
     func load(_ clips: [LocalClip], nextID n: Int) {
         items = clips
@@ -406,17 +422,26 @@ final class History {
         onChange?()
     }
 
+    /// Clip yang disematkan tetap ada (hapus satu per satu kalau memang ingin dibuang)
     func clear() {
-        items.removeAll()
+        items.removeAll { $0.pinned == nil }
         onChange?()
     }
 
     /// Status clip berubah (mis. sudah terkirim)
     func changed() { onChange?() }
 
+    /// Clip yang disematkan tidak dihitung dalam batas dan tidak pernah dibuang otomatis
     private func trim() {
-        if items.count > limit { items.removeLast(items.count - limit) }
-        while items.count > 1, items.reduce(0, { $0 + ($1.data?.count ?? 0) }) > maxImageBytes { items.removeLast() }
+        var unpinned = items.filter { $0.pinned == nil }.count
+        while unpinned > limit, let i = items.lastIndex(where: { $0.pinned == nil }) {
+            items.remove(at: i)
+            unpinned -= 1
+        }
+        while items.count > 1, items.reduce(0, { $0 + ($1.data?.count ?? 0) }) > maxImageBytes,
+              let i = items.lastIndex(where: { $0.pinned == nil }) {
+            items.remove(at: i)
+        }
     }
 }
 
@@ -437,6 +462,7 @@ final class HistoryStore {
         let from: String
         let time: Date
         let synced: Bool
+        let pinned: Date? // tidak ada di file versi lama → nil
     }
 
     let dir: URL
@@ -475,7 +501,7 @@ final class HistoryStore {
                 }
             }
             items.append(Item(id: c.id, kind: c.kind, text: c.text, mime: c.mime, size: c.size, from: c.from,
-                              time: c.time, synced: c.synced))
+                              time: c.time, synced: c.synced, pinned: c.pinned))
         }
         if let data = try? JSONEncoder().encode(Saved(nextID: h.nextID, items: items)) {
             try? data.write(to: jsonURL, options: .atomic)
@@ -498,7 +524,7 @@ final class HistoryStore {
                 if img == nil { continue }
             }
             clips.append(LocalClip(id: it.id, kind: it.kind, text: it.text, data: img, mime: it.mime, size: it.size,
-                                   from: it.from, time: it.time, serverID: nil, synced: it.synced))
+                                   from: it.from, time: it.time, serverID: nil, synced: it.synced, pinned: it.pinned))
         }
         h.load(clips, nextID: s.nextID)
     }
@@ -2034,6 +2060,261 @@ final class Updater: NSObject {
     }
 }
 
+// MARK: - Pintasan keyboard (bisa diatur di Pengaturan → Pintasan)
+
+/// Satu kombinasi tombol. `keyCode` (tombol fisik) dipakai pintasan global (Carbon), `key` (karakter tanpa modifier)
+/// dipakai keyEquivalent menu & tampilan. Disimpan di UserDefaults sebagai "keyCode:modifier:karakter".
+struct Shortcut: Equatable {
+    static let mask: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+    /// Nama tombol khusus (tidak punya karakter yang bisa ditampilkan)
+    static let names: [UInt16: String] = [
+        49: "Spasi", 36: "↩", 76: "⌤", 48: "⇥", 51: "⌫", 117: "⌦", 53: "⎋", 123: "←", 124: "→", 125: "↓", 126: "↑",
+        115: "↖", 119: "↘", 116: "⇞", 121: "⇟", 122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6",
+        98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12",
+    ]
+
+    let keyCode: UInt16
+    let mods: NSEvent.ModifierFlags
+    let key: String
+
+    init(keyCode: UInt16, mods: NSEvent.ModifierFlags, key: String) {
+        self.keyCode = keyCode
+        self.mods = mods.intersection(Shortcut.mask)
+        self.key = key.lowercased()
+    }
+
+    init?(event e: NSEvent) {
+        // karakter tanpa modifier apa pun (⇧⌘1 → "1", bukan "!")
+        let base = e.characters(byApplyingModifiers: []) ?? e.charactersIgnoringModifiers ?? ""
+        guard !base.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || Shortcut.names[e.keyCode] != nil else { return nil }
+        self.init(keyCode: e.keyCode, mods: e.modifierFlags, key: base)
+    }
+
+    init?(encoded s: String) {
+        let p = s.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+        guard p.count == 3, let k = UInt16(p[0]), let m = UInt(p[1]) else { return nil }
+        self.init(keyCode: k, mods: NSEvent.ModifierFlags(rawValue: m), key: String(p[2]))
+    }
+
+    var encoded: String { "\(keyCode):\(mods.rawValue):\(key)" }
+
+    /// Tombol khusus (panah, F1, ↩, …): tidak bisa dipakai sebagai keyEquivalent menu
+    var special: Bool { Shortcut.names[keyCode] != nil }
+
+    var display: String {
+        var s = ""
+        if mods.contains(.control) { s += "⌃" }
+        if mods.contains(.option) { s += "⌥" }
+        if mods.contains(.shift) { s += "⇧" }
+        if mods.contains(.command) { s += "⌘" }
+        return s + (Shortcut.names[keyCode] ?? key.uppercased())
+    }
+
+    var carbonMods: UInt32 {
+        var m: UInt32 = 0
+        if mods.contains(.command) { m |= UInt32(cmdKey) }
+        if mods.contains(.option) { m |= UInt32(optionKey) }
+        if mods.contains(.control) { m |= UInt32(controlKey) }
+        if mods.contains(.shift) { m |= UInt32(shiftKey) }
+        return m
+    }
+
+    /// Sama = tombol fisik & modifier sama (karakter hanya untuk tampilan)
+    static func == (a: Shortcut, b: Shortcut) -> Bool { a.keyCode == b.keyCode && a.mods == b.mods }
+}
+
+/// Aksi yang punya pintasan sendiri. `global` = berlaku dari aplikasi mana saja; selain itu hanya selama menu terbuka.
+enum ShortcutAction: String, CaseIterable {
+    case openMenu, openPinned, pinLatest, openManager, toggleSync, settings, quit
+
+    var global: Bool { self != .settings && self != .quit }
+
+    var title: String {
+        switch self {
+        case .openMenu: return "Buka menu PasteLAN"
+        case .openPinned: return "Buka daftar clip sematan"
+        case .pinLatest: return "Sematkan / lepas sematan clip terakhir"
+        case .openManager: return "Buka Clipboard manager"
+        case .toggleSync: return "Autosync nyala / mati"
+        case .settings: return "Pengaturan…"
+        case .quit: return "Keluar PasteLAN"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .openMenu: return "Menu riwayat terbuka tanpa klik ikon di menu bar; ketik untuk mencari, ⌘0–⌘9 untuk menyalin."
+        case .openPinned: return "Menu kecil berisi clip yang disematkan saja, muncul di posisi kursor (⌘0–⌘9 untuk menyalin)."
+        case .pinLatest: return "Clip paling atas di riwayat (biasanya yang terakhir Anda copy)."
+        case .openManager: return "Tab Clipboard di Pengaturan."
+        case .toggleSync: return "Sama seperti saklar Autosync di tab Umum."
+        case .settings: return "Item \"Pengaturan…\" di menu."
+        case .quit: return "Item \"Keluar PasteLAN\" di menu."
+        }
+    }
+
+    var defaultShortcut: Shortcut? {
+        switch self {
+        case .openMenu: return Shortcut(keyCode: UInt16(kVK_ANSI_V), mods: [.control, .option], key: "v")
+        case .openPinned: return Shortcut(keyCode: UInt16(kVK_ANSI_S), mods: [.control, .option], key: "s")
+        case .pinLatest: return Shortcut(keyCode: UInt16(kVK_ANSI_P), mods: [.control, .option], key: "p")
+        case .openManager, .toggleSync: return nil
+        case .settings: return Shortcut(keyCode: UInt16(kVK_ANSI_Comma), mods: [.command], key: ",")
+        case .quit: return Shortcut(keyCode: UInt16(kVK_ANSI_Q), mods: [.command], key: "q")
+        }
+    }
+}
+
+/// Aksi "tahan modifier lalu klik clip" di menu (juga modifier + ⌘0–⌘9). Satu modifier hanya untuk satu aksi.
+enum MenuAction: String, CaseIterable {
+    case send, delete, pin
+
+    var title: String {
+        switch self {
+        case .send: return "Kirim clip"
+        case .delete: return "Hapus clip"
+        case .pin: return "Sematkan / lepas sematan clip"
+        }
+    }
+
+    var verb: String {
+        switch self {
+        case .send: return "mengirim"
+        case .delete: return "menghapus"
+        case .pin: return "menyematkan"
+        }
+    }
+
+    var defaultModifier: String {
+        switch self {
+        case .send: return "control"
+        case .delete: return "option"
+        case .pin: return "shift"
+        }
+    }
+}
+
+/// Pintasan global lewat Carbon `RegisterEventHotKey`: tidak butuh izin Aksesibilitas / Input Monitoring,
+/// dan tombolnya tidak diteruskan ke aplikasi lain.
+final class HotKeys {
+    private static let signature: OSType = 0x504C_414E // "PLAN"
+    private var refs: [EventHotKeyRef] = []
+    private var actions: [UInt32: () -> Void] = [:]
+    private var handler: EventHandlerRef?
+
+    init() {
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        let me = Unmanaged.passUnretained(self).toOpaque()
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, user in
+            guard let event, let user else { return OSStatus(eventNotHandledErr) }
+            var id = EventHotKeyID()
+            let err = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                        nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
+            guard err == noErr else { return err }
+            let hk = Unmanaged<HotKeys>.fromOpaque(user).takeUnretainedValue()
+            // dijalankan setelah event selesai diproses (mis. membuka menu)
+            DispatchQueue.main.async { hk.actions[id.id]?() }
+            return noErr
+        }, 1, &spec, me, &handler)
+    }
+
+    /// Ganti semua pintasan terdaftar; mengembalikan id yang gagal didaftarkan (dipakai sistem / aplikasi lain)
+    @discardableResult
+    func register(_ list: [(id: UInt32, shortcut: Shortcut, action: () -> Void)]) -> Set<UInt32> {
+        unregisterAll()
+        var failed = Set<UInt32>()
+        for (id, s, action) in list {
+            var ref: EventHotKeyRef?
+            let st = RegisterEventHotKey(UInt32(s.keyCode), s.carbonMods, EventHotKeyID(signature: HotKeys.signature, id: id),
+                                         GetApplicationEventTarget(), 0, &ref)
+            if st == noErr, let ref {
+                refs.append(ref)
+                actions[id] = action
+            } else {
+                failed.insert(id)
+            }
+        }
+        return failed
+    }
+
+    func unregisterAll() {
+        refs.forEach { UnregisterEventHotKey($0) }
+        refs.removeAll()
+        actions.removeAll()
+    }
+}
+
+/// Tombol perekam pintasan: klik → tekan kombinasi tombol. ⌫ = hapus pintasan, ⎋ = batal.
+/// Selama merekam, pintasan global dilepas dulu (lewat `onRecording`) supaya kombinasi yang sudah terdaftar bisa direkam.
+final class ShortcutRecorder: NSButton {
+    var shortcut: Shortcut? { didSet { refresh() } }
+    /// Pintasan baru (nil = dihapus); false = ditolak (pintasan lama tetap)
+    var onChange: ((Shortcut?) -> Bool)?
+    var onRecording: ((Bool) -> Void)?
+    private(set) var recording = false
+    private var monitor: Any?
+
+    init() {
+        super.init(frame: .zero)
+        bezelStyle = .rounded
+        target = self
+        action = #selector(clicked)
+        widthAnchor.constraint(equalToConstant: 140).isActive = true
+        refresh()
+    }
+    required init?(coder: NSCoder) { fatalError("tidak dipakai") }
+
+    private func refresh() {
+        title = recording ? "Tekan pintasan…" : shortcut?.display ?? "Belum diatur"
+        contentTintColor = recording ? .controlAccentColor : nil
+        toolTip = "Klik lalu tekan kombinasi tombol. ⌫ menghapus pintasan, ⎋ membatalkan."
+    }
+
+    @objc private func clicked() { recording ? stop() : start() }
+
+    private func start() {
+        recording = true
+        refresh()
+        onRecording?(true)
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            self?.handle(e)
+            return nil // tombol yang direkam tidak diteruskan (mis. ⌘W tidak menutup jendela)
+        }
+    }
+
+    private func handle(_ e: NSEvent) {
+        let mods = e.modifierFlags.intersection(Shortcut.mask)
+        if mods.isEmpty, e.keyCode == 53 { return stop() } // ⎋
+        if mods.isEmpty, e.keyCode == 51 || e.keyCode == 117 { // ⌫ / ⌦
+            stop()
+            return clear()
+        }
+        guard let s = Shortcut(event: e), !s.mods.isEmpty else { return NSSound.beep() } // wajib pakai modifier
+        stop()
+        if onChange?(s) ?? true { shortcut = s }
+    }
+
+    func stop() {
+        guard recording else { return }
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        recording = false
+        refresh()
+        onRecording?(false)
+    }
+
+    @objc func clear() {
+        stop()
+        if onChange?(nil) ?? true { shortcut = nil }
+    }
+
+    /// Jendela ditutup / tab berganti saat merekam → batal
+    override func viewWillMove(toWindow w: NSWindow?) {
+        if w == nil { stop() }
+        super.viewWillMove(toWindow: w)
+    }
+}
+
 // MARK: - Aplikasi
 
 /// Kotak teks tanpa latar sama sekali: saat diketik, macOS memasang "field editor" (NSTextView) yang menggambar
@@ -2288,9 +2569,120 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     /// Metode: "server" (default, lewat server PasteLAN) atau "lan" (Wi-Fi lokal tanpa server)
     var lanMode: Bool { d.string(forKey: "mode") == "lan" }
 
+    // MARK: pintasan (Pengaturan → Pintasan)
+
+    lazy var hotKeys = HotKeys()
+    /// Modifier untuk "tahan lalu klik clip" di menu (key, simbol, nama, flag); "none" = aksi itu tanpa modifier
+    static let menuModifiers: [(key: String, symbol: String, name: String, flag: NSEvent.ModifierFlags)] = [
+        ("option", "⌥", "Option", .option), ("control", "⌃", "Control", .control), ("shift", "⇧", "Shift", .shift),
+    ]
+    /// ⌘0–⌘9 untuk sepuluh clip teratas selama menu terbuka
+    var menuDigits: Bool { d.bool(forKey: "menuDigits") }
+
+    /// Pintasan sebuah aksi: belum pernah diubah → default; "" → dimatikan
+    func shortcut(_ a: ShortcutAction) -> Shortcut? {
+        guard let s = d.string(forKey: "shortcut.\(a.rawValue)") else { return a.defaultShortcut }
+        return Shortcut(encoded: s)
+    }
+
+    func menuModifierKey(_ a: MenuAction) -> String { d.string(forKey: "menuMod.\(a.rawValue)") ?? a.defaultModifier }
+    func menuModifier(_ a: MenuAction) -> (symbol: String, flag: NSEvent.ModifierFlags)? {
+        AppDelegate.menuModifiers.first { $0.key == menuModifierKey(a) }.map { ($0.symbol, $0.flag) }
+    }
+
+    /// Pilih modifier untuk satu aksi; kalau sudah dipakai aksi lain, keduanya bertukar
+    func setMenuModifier(_ key: String, for a: MenuAction) {
+        let old = menuModifierKey(a)
+        if key != "none", let other = MenuAction.allCases.first(where: { $0 != a && menuModifierKey($0) == key }) {
+            d.set(old, forKey: "menuMod.\(other.rawValue)")
+        }
+        d.set(key, forKey: "menuMod.\(a.rawValue)")
+    }
+
+    /// "tahan ⌃ untuk mengirim", … sesuai pengaturan (untuk tooltip & baris petunjuk di menu)
+    var modifierHints: [String] {
+        MenuAction.allCases.compactMap { a in menuModifier(a).map { "tahan \($0.symbol) untuk \(a.verb)" } }
+    }
+
+    /// Pesan kesalahan kalau pintasan tidak boleh dipakai untuk aksi ini (nil = boleh)
+    func shortcutProblem(_ s: Shortcut, for a: ShortcutAction) -> String? {
+        if a.global {
+            // macOS 15 menolak pintasan global yang hanya ⌥ / ⌥⇧; ⌘ + satu tombol akan merebut pintasan aplikasi lain
+            if s.mods.intersection([.command, .control]).isEmpty { return "Pintasan global harus memakai ⌘ atau ⌃." }
+            if s.mods == [.command] { return "⌘ + satu tombol dipakai aplikasi lain (⌘C, ⌘V, …). Tambahkan ⌃, ⌥, atau ⇧." }
+        } else {
+            if !s.mods.contains(.command) { return "Pintasan di menu harus memakai ⌘ (tanpa ⌘ tombolnya diketik ke kotak cari)." }
+            if s.special { return "Pintasan di menu harus memakai huruf, angka, atau tanda baca." }
+            if s.key.count == 1, let ch = s.key.first, ch.isNumber {
+                return "⌘ + angka (dengan / tanpa modifier lain) dipakai untuk clip di menu."
+            }
+        }
+        if let other = ShortcutAction.allCases.first(where: { $0 != a && shortcut($0) == s }) {
+            return "\(s.display) sudah dipakai untuk \"\(other.title)\"."
+        }
+        return nil
+    }
+
+    /// Simpan pintasan baru (nil = matikan). false kalau ditolak (pesan ditampilkan) atau gagal didaftarkan.
+    @discardableResult
+    func setShortcut(_ s: Shortcut?, for a: ShortcutAction) -> Bool {
+        if let s, let problem = shortcutProblem(s, for: a) {
+            alert("Pintasan \(s.display) tidak bisa dipakai", problem)
+            return false
+        }
+        let old = d.string(forKey: "shortcut.\(a.rawValue)")
+        d.set(s?.encoded ?? "", forKey: "shortcut.\(a.rawValue)")
+        if registerHotKeys().contains(a), let s {
+            if let old { d.set(old, forKey: "shortcut.\(a.rawValue)") } else { d.removeObject(forKey: "shortcut.\(a.rawValue)") }
+            registerHotKeys()
+            alert("Pintasan \(s.display) tidak bisa dipakai", "Kombinasi ini sudah dipakai macOS atau aplikasi lain.")
+            return false
+        }
+        return true
+    }
+
+    func resetShortcuts() {
+        for a in ShortcutAction.allCases { d.removeObject(forKey: "shortcut.\(a.rawValue)") }
+        for a in MenuAction.allCases { d.removeObject(forKey: "menuMod.\(a.rawValue)") }
+        d.removeObject(forKey: "menuDigits")
+        registerHotKeys()
+    }
+
+    /// Daftarkan ulang semua pintasan global; mengembalikan aksi yang gagal didaftarkan
+    @discardableResult
+    func registerHotKeys() -> Set<ShortcutAction> {
+        let all = ShortcutAction.allCases
+        var list: [(id: UInt32, shortcut: Shortcut, action: () -> Void)] = []
+        for (i, a) in all.enumerated() where a.global {
+            guard let s = shortcut(a) else { continue }
+            list.append((UInt32(i + 1), s, { [weak self] in self?.runShortcut(a) }))
+        }
+        return Set(hotKeys.register(list).map { all[Int($0) - 1] })
+    }
+
+    func runShortcut(_ a: ShortcutAction) {
+        switch a {
+        case .openMenu: if !menuOpen { item.button?.performClick(nil) }
+        case .openPinned: openPinnedMenu()
+        case .pinLatest: pinLatest()
+        case .openManager: openClipboardManager()
+        case .toggleSync: toggleSharing()
+        case .settings: openSettings()
+        case .quit: NSApp.terminate(nil)
+        }
+    }
+
+    func alert(_ title: String, _ text: String) {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = text
+        NSApp.activate(ignoringOtherApps: true)
+        a.runModal()
+    }
+
     func applicationDidFinishLaunching(_ n: Notification) {
         d.register(defaults: ["sharing": true, "saveImages": false, "mode": "server", "historyLimit": 15,
-                              "historyPersist": true, "listen": true])
+                              "historyPersist": true, "listen": true, "menuDigits": true])
         d.register(defaults: Dictionary(uniqueKeysWithValues: AppDelegate.menuLinks.map { ($0.key, $0.on) }))
         d.removeObject(forKey: "token") // link Wi-Fi lokal lama (v0.1.x, token di ?t=) tidak berlaku lagi
         // "Kirim setiap copy otomatis" (≤ v1.7) digabung ke autosync: yang dulu mematikannya → autosync mati
@@ -2331,6 +2723,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
 
         applySharing()
         updater.start()
+        registerHotKeys()
 
         if !d.bool(forKey: "didOnboard") {
             d.set(true, forKey: "didOnboard")
@@ -2403,10 +2796,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         settings.reloadStatus()
     }
 
-    /// Ikon ✓ sebentar saat menerima sesuatu dari HP
-    func flash() {
+    /// Ikon ✓ sebentar saat menerima sesuatu dari HP (atau ikon lain, mis. pin saat menyematkan lewat pintasan)
+    func flash(_ name: String = "checkmark.circle.fill") {
         flashTimer?.invalidate()
-        setBarImage(barIcon("checkmark.circle.fill"))
+        setBarImage(barIcon(name))
         flashTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
             self?.flashTimer = nil
             self?.updateIcon()
@@ -2713,11 +3106,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             manager.image = symbol("list.bullet.rectangle")
         }
         let pref = add("Pengaturan…", #selector(openSettings))
-        pref.keyEquivalent = ","
+        setKey(pref, shortcut(.settings)) // default ⌘, (Pengaturan → Pintasan)
         pref.image = symbol("gearshape")
         if updater.hasUpdate { menu.addItem(updater.menuItem) }
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Keluar PasteLAN", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let quit = NSMenuItem(title: "Keluar PasteLAN", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        setKey(quit, shortcut(.quit)) // default ⌘Q
+        menu.addItem(quit)
+    }
+
+    func setKey(_ it: NSMenuItem, _ s: Shortcut?) {
+        it.keyEquivalent = s?.key ?? ""
+        it.keyEquivalentModifierMask = s?.mods ?? []
     }
 
     func menuWillOpen(_ m: NSMenu) {
@@ -2776,7 +3176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             let undo = add("Urungkan hapus \"\(last.clip.title)\"", #selector(undoDelete))
             undo.image = symbol("arrow.uturn.backward")
         }
-        let clear = add("Hapus riwayat…", #selector(clearHistory), enabled: !history.items.isEmpty)
+        let clear = add("Hapus riwayat…", #selector(clearHistory), enabled: history.items.contains { $0.pinned == nil })
         clear.tag = historyTag + 1
     }
 
@@ -2799,79 +3199,113 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             e.isEnabled = false
             put(e)
         }
+        // clip yang disematkan: bagian sendiri di atas riwayat, urutannya tetap
+        let pinned = list.filter { $0.pinned != nil }.sorted { ($0.pinned ?? .distantPast) < ($1.pinned ?? .distantPast) }
+        let recent = list.filter { $0.pinned == nil }
+        if !pinned.isEmpty {
+            put(menuNote("Disematkan"))
+            for c in pinned { clipMenuItems(c, key: "").forEach(put) }
+            if !recent.isEmpty { put(.separator()) }
+        }
         var more: NSMenu?
-        for (n, c) in list.enumerated() {
-            // ⌘0 … ⌘9 untuk sepuluh clip teratas (berlaku selama menu terbuka)
-            let it = NSMenuItem(title: c.title, action: #selector(recopy(_:)), keyEquivalent: n < 10 ? "\(n)" : "")
-            it.target = self
-            it.representedObject = c.id
-            let fresh = unread.contains(c.id)
-            if fresh { it.image = unreadDot } // clip baru dari server (Dengarkan server) yang belum dilihat
-            it.toolTip = "Dari \(c.source)" + (fresh ? " · baru" : "") + (c.pending ? " · belum dikirim ke server / HP" : "") +
-                " · klik untuk menyalin ke clipboard Mac, tahan ⌃ untuk mengirim, tahan ⌥ untuk menghapus"
-            // teks: isi lengkap (dibatasi) tampil di atas, catatan aksi tetap di bagian paling bawah
-            // (di panel `imageHover`, bukan tooltip biasa yang bisa terpotong di atas layar)
-            if c.previewText() != nil, let tip = it.toolTip {
-                hoverTips[c.id] = tip
-                it.toolTip = nil
-            }
-            // gambar yang isinya sudah ada di Mac: catatan ini tampil di panel pratinjau (bersama gambarnya)
-            if c.kind == "image", c.data != nil, let tip = it.toolTip {
-                hoverTips[c.id] = tip
-                it.toolTip = nil
-            }
-            // tahan ⌥ → baris ini berganti jadi "Hapus" (alternate item: harus tepat setelah item utamanya,
-            // tombol pintas sama dengan modifier berbeda → ⌥⌘0–⌥⌘9 menghapus)
-            let del = NSMenuItem(title: "Hapus: \(c.title)", action: #selector(deleteClip(_:)), keyEquivalent: it.keyEquivalent)
-            del.keyEquivalentModifierMask = it.keyEquivalent.isEmpty ? [.option] : [.command, .option]
-            del.isAlternate = true
-            del.target = self
-            del.representedObject = c.id
-            del.image = symbol("trash")
-            del.toolTip = "Hapus dari riwayat Mac ini (tidak menghapus di server / HP)"
-            // tahan ⌃ → "Kirim": kirim clip ini saja ke server / HP (berguna saat autosync mati)
-            let send = NSMenuItem(title: canSendOne ? "Kirim: \(c.title)" : "Kirim (nyalakan autosync dulu): \(c.title)",
-                                  action: #selector(sendClip(_:)), keyEquivalent: it.keyEquivalent)
-            send.keyEquivalentModifierMask = it.keyEquivalent.isEmpty ? [.control] : [.command, .control]
-            send.isAlternate = true
-            send.isEnabled = canSendOne
-            send.target = self
-            send.representedObject = c.id
-            send.image = symbol("arrow.up.circle")
-            send.toolTip = lanMode ? "Kirim clip ini ke HP (Wi-Fi lokal)" : "Kirim clip ini ke server & browser"
+        for (n, c) in recent.enumerated() {
+            // ⌘0 … ⌘9 untuk sepuluh clip teratas (berlaku selama menu terbuka; bisa dimatikan di Pengaturan → Pintasan)
+            let rows = clipMenuItems(c, key: n < 10 && menuDigits ? "\(n)" : "")
             if n < inlineClips {
-                put(it)
-                put(del)
-                put(send)
+                rows.forEach(put)
             } else {
                 if more == nil {
                     let sub = NSMenu()
                     sub.autoenablesItems = false
                     sub.delegate = self // hover gambar di submenu juga menampilkan pratinjau
-                    let mi = NSMenuItem(title: "Riwayat lainnya (\(list.count - inlineClips))", action: nil, keyEquivalent: "")
+                    let mi = NSMenuItem(title: "Riwayat lainnya (\(recent.count - inlineClips))", action: nil, keyEquivalent: "")
                     mi.submenu = sub
                     put(mi)
                     more = sub
                 }
-                more?.addItem(it)
-                more?.addItem(del)
-                more?.addItem(send)
+                rows.forEach { more?.addItem($0) }
             }
         }
-        if !list.isEmpty {
-            let tip = NSMenuItem(title: "Tahan ⌃ untuk mengirim clip · tahan ⌥ untuk menghapus", action: nil, keyEquivalent: "")
-            tip.attributedTitle = NSAttributedString(string: tip.title, attributes: [
-                .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize), .foregroundColor: NSColor.tertiaryLabelColor])
-            tip.isEnabled = false
-            put(tip)
+        let hints = modifierHints
+        if !list.isEmpty, !hints.isEmpty {
+            let text = hints.joined(separator: " · ")
+            put(menuNote(text.prefix(1).uppercased() + text.dropFirst()))
         }
+    }
+
+    /// Baris keterangan kecil (tidak bisa diklik) di menu
+    func menuNote(_ text: String) -> NSMenuItem {
+        let tip = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+        tip.attributedTitle = NSAttributedString(string: tip.title, attributes: [
+            .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize), .foregroundColor: NSColor.tertiaryLabelColor])
+        tip.isEnabled = false
+        return tip
+    }
+
+    /// Baris menu untuk satu clip: item utama + item alternatif (tahan modifier → Kirim / Hapus / Sematkan, sesuai
+    /// Pengaturan → Pintasan). `hover`: isi teks / gambar tampil di panel samping (menu utama), bukan tooltip biasa.
+    func clipMenuItems(_ c: LocalClip, key: String, hover: Bool = true) -> [NSMenuItem] {
+        let it = NSMenuItem(title: c.title, action: #selector(recopy(_:)), keyEquivalent: key)
+        it.target = self
+        it.representedObject = c.id
+        let fresh = unread.contains(c.id)
+        if fresh { it.image = unreadDot } // clip baru dari server (Dengarkan server) yang belum dilihat
+        else if c.pinned != nil { it.image = symbol("pin.fill") }
+        let hints = modifierHints
+        it.toolTip = "Dari \(c.source)" + (fresh ? " · baru" : "") + (c.pinned != nil ? " · disematkan" : "") +
+            (c.pending ? " · belum dikirim ke server / HP" : "") +
+            " · klik untuk menyalin ke clipboard Mac" + (hints.isEmpty ? "" : ", " + hints.joined(separator: ", "))
+        // teks: isi lengkap (dibatasi) tampil di atas, catatan aksi tetap di bagian paling bawah
+        // (di panel `imageHover`, bukan tooltip biasa yang bisa terpotong di atas layar)
+        if hover, c.previewText() != nil, let tip = it.toolTip {
+            hoverTips[c.id] = tip
+            it.toolTip = nil
+        }
+        // gambar yang isinya sudah ada di Mac: catatan ini tampil di panel pratinjau (bersama gambarnya)
+        if hover, c.kind == "image", c.data != nil, let tip = it.toolTip {
+            hoverTips[c.id] = tip
+            it.toolTip = nil
+        }
+        var out = [it]
+        for a in MenuAction.allCases {
+            guard let m = menuModifier(a) else { continue }
+            let alt: NSMenuItem
+            switch a {
+            case .delete:
+                // tahan ⌥ → baris ini berganti jadi "Hapus" (alternate item: harus tepat setelah item utamanya,
+                // tombol pintas sama dengan modifier berbeda → ⌥⌘0–⌥⌘9 menghapus)
+                alt = NSMenuItem(title: "Hapus: \(c.title)", action: #selector(deleteClip(_:)), keyEquivalent: key)
+                alt.image = symbol("trash")
+                alt.toolTip = "Hapus dari riwayat Mac ini (tidak menghapus di server / HP)"
+            case .send:
+                // tahan ⌃ → "Kirim": kirim clip ini saja ke server / HP (berguna saat autosync mati)
+                alt = NSMenuItem(title: canSendOne ? "Kirim: \(c.title)" : "Kirim (nyalakan autosync dulu): \(c.title)",
+                                 action: #selector(sendClip(_:)), keyEquivalent: key)
+                alt.isEnabled = canSendOne
+                alt.image = symbol("arrow.up.circle")
+                alt.toolTip = lanMode ? "Kirim clip ini ke HP (Wi-Fi lokal)" : "Kirim clip ini ke server & browser"
+            case .pin:
+                // tahan ⇧ → "Sematkan" / "Lepas sematan": clip sematan tetap di atas & tidak terbuang oleh batas riwayat
+                let on = c.pinned != nil
+                alt = NSMenuItem(title: on ? "Lepas sematan: \(c.title)" : "Sematkan: \(c.title)",
+                                 action: #selector(togglePinClip(_:)), keyEquivalent: key)
+                alt.image = symbol(on ? "pin.slash" : "pin")
+                alt.toolTip = on ? "Kembalikan ke riwayat biasa" : "Tampil di bagian \"Disematkan\" dan tidak terbuang oleh batas riwayat"
+            }
+            alt.keyEquivalentModifierMask = key.isEmpty ? [m.flag] : [.command, m.flag]
+            alt.isAlternate = true
+            alt.target = self
+            alt.representedObject = c.id
+            out.append(alt)
+        }
+        return out
     }
 
     func refreshHistoryItems() {
         guard let first = menu.items.firstIndex(where: { $0.tag == historyTag }) else { return }
         for it in menu.items where it.tag == historyTag { menu.removeItem(it) }
         insertHistoryItems(at: first)
-        menu.items.first(where: { $0.tag == historyTag + 1 })?.isEnabled = !history.items.isEmpty
+        menu.items.first(where: { $0.tag == historyTag + 1 })?.isEnabled = history.items.contains { $0.pinned == nil }
     }
 
     func addServerSection() {
@@ -3038,7 +3472,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         guard let id = s.representedObject as? Int, let c = history.clip(id) else { return }
         if push(c, once: true, notify: true) {
             flash()
-            return reopenMenu()
+            return reopenMenu(from: s)
         }
         let a = NSAlert()
         a.messageText = "Clip tidak terkirim"
@@ -3054,7 +3488,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     @objc func deleteClip(_ s: NSMenuItem) {
         guard let id = s.representedObject as? Int, let r = history.take(id) else { return }
         lastDeleted = r
-        reopenMenu()
+        reopenMenu(from: s)
+    }
+    /// ⇧ + klik (atau ⇧⌘0–9; modifier-nya diatur di Pengaturan → Pintasan): sematkan / lepas sematan satu clip
+    @objc func togglePinClip(_ s: NSMenuItem) {
+        guard let id = s.representedObject as? Int else { return }
+        history.togglePin(id)
+        reopenMenu(from: s)
+    }
+    /// Pintasan global: sematkan / lepas sematan clip paling atas di riwayat (biasanya isi clipboard saat ini)
+    func pinLatest() {
+        guard let c = history.items.first else { return NSSound.beep() }
+        history.togglePin(c.id)
+        flash(c.pinned != nil ? "pin.fill" : "pin.slash")
+    }
+    /// Pintasan global: menu kecil berisi clip yang disematkan saja, di posisi kursor
+    func openPinnedMenu() {
+        guard !menuOpen else { return }
+        let m = NSMenu()
+        m.autoenablesItems = false
+        let pinned = history.pinnedItems
+        if pinned.isEmpty {
+            let hint = menuModifier(.pin).map { "tahan \($0.symbol) lalu klik clip di menu PasteLAN" } ?? "klik ikon pin di Clipboard manager"
+            m.addItem(menuNote("Belum ada clip yang disematkan (\(hint))"))
+        } else {
+            m.addItem(menuNote("Disematkan"))
+        }
+        for (n, c) in pinned.enumerated() {
+            clipMenuItems(c, key: n < 10 && menuDigits ? "\(n)" : "", hover: false).forEach { m.addItem($0) }
+        }
+        m.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
+    /// Hapus / kirim / sematkan dari menu utama (juga submenu "Riwayat lainnya") → menu dibuka lagi;
+    /// dari daftar sematan (pintasan global) tidak
+    func reopenMenu(from s: NSMenuItem) {
+        if s.menu === menu || s.menu?.supermenu === menu { reopenMenu() }
     }
     /// NSMenu selalu tertutup setelah item diklik → buka lagi di tempat yang sama (selagi ⌥ / ⌃ masih ditahan,
     /// baris clip langsung tampil sebagai "Hapus" / "Kirim" lagi)
@@ -3074,9 +3542,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         let a = NSAlert()
         let remote = lanMode ? "HP" : "server"
         a.messageText = "Hapus riwayat clipboard?"
-        a.informativeText = syncActive
+        a.informativeText = (syncActive
             ? "Riwayat di Mac ini dikosongkan. Pilih \"Hapus juga di \(remote)\" untuk mengosongkan riwayat di semua perangkat."
-            : "Riwayat di Mac ini dikosongkan. Riwayat di \(remote) tidak berubah."
+            : "Riwayat di Mac ini dikosongkan. Riwayat di \(remote) tidak berubah.") +
+            (history.pinnedItems.isEmpty ? "" : " Clip yang disematkan tetap ada.")
         a.addButton(withTitle: "Hapus di Mac ini")
         a.addButton(withTitle: "Batal")
         if syncActive { a.addButton(withTitle: "Hapus juga di \(remote)") }
@@ -3162,6 +3631,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         selama ⌥ / ⌃ masih ditahan Anda bisa menghapus / mengirim banyak clip berturut-turut. Jumlah clip yang diingat diatur di \
         Pengaturan → Umum.
 
+        Sematkan: tahan ⇧ (Shift) lalu klik sebuah clip (atau ⇧⌘0–⇧⌘9), atau tekan ⌃⌥P (default) untuk menyematkan clip terakhir. \
+        Clip yang disematkan tampil di bagian "Disematkan" di atas riwayat, tidak terbuang oleh batas riwayat, dan tidak \
+        ikut "Hapus riwayat…". ⌃⌥S membuka daftar clip sematan di posisi kursor dari aplikasi mana saja, ⌃⌥V membuka menu \
+        PasteLAN. Semua pintasan (termasuk ⌃ / ⌥ / ⇧ + klik) bisa diubah di Pengaturan → Pintasan.
+
         Autosync: "Autosync dengan server & browser" (Pengaturan → Umum, atau di menu bila ditampilkan) membuat setiap copy di Mac otomatis terkirim dan kiriman \
         dari HP otomatis masuk. Kalau dimatikan, PasteLAN jadi clipboard manager offline biasa: semua copy tetap masuk \
         riwayat Mac, tapi tidak dikirim; satu clip masih bisa dikirim dengan ⌃ + klik. Saat dinyalakan lagi hanya copy \
@@ -3227,7 +3701,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     }
 }
 
-// MARK: - Jendela Pengaturan (tab Umum, Koneksi, Clipboard, Tentang)
+// MARK: - Jendela Pengaturan (tab Umum, Koneksi, Clipboard, Pintasan, Tentang)
 
 /// Kartu berlatar gaya System Settings; warnanya ikut tema terang / gelap
 final class CardView: NSView {
@@ -3430,13 +3904,14 @@ final class ClipboardPage: NSViewController, NSTableViewDataSource, NSTableViewD
         info.alignment = .right
         let top = Form.stack([search, info], vertical: false, spacing: 12)
 
-        for (id, title, width) in [("check", "", 24), ("title", "Isi", 300), ("from", "Dari", 96), ("time", "Waktu", 78),
-                                   ("status", "Status", 88)] as [(String, String, CGFloat)] {
+        for (id, title, width) in [("check", "", 24), ("pin", "", 24), ("title", "Isi", 276), ("from", "Dari", 96),
+                                   ("time", "Waktu", 78), ("status", "Status", 88)] as [(String, String, CGFloat)] {
             let c = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
             c.title = title
             c.width = width
             c.minWidth = width
             if id == "check" { c.headerToolTip = "Centang clip yang ingin dikirim / dihapus" }
+            if id == "pin" { c.headerToolTip = "Clip yang disematkan (klik ikon pin untuk menyematkan / melepas)" }
             table.addTableColumn(c)
         }
         table.columnAutoresizingStyle = .noColumnAutoresizing
@@ -3483,11 +3958,16 @@ final class ClipboardPage: NSViewController, NSTableViewDataSource, NSTableViewD
     func reload() {
         guard isViewLoaded, let app else { return }
         let all = app.history.items
-        rows = all.filter { $0.matches(search.stringValue) }
+        // clip yang disematkan di atas (seperti di menu), sisanya urut riwayat
+        let found = all.filter { $0.matches(search.stringValue) }
+        rows = found.filter { $0.pinned != nil }.sorted { ($0.pinned ?? .distantPast) < ($1.pinned ?? .distantPast) } +
+            found.filter { $0.pinned == nil }
         checked.formIntersection(Set(all.map { $0.id }))
         table.reloadData()
         let pending = all.filter { $0.pending }.count
-        info.stringValue = "\(all.count) dari maks \(app.historyLimit) clip · \(pending) belum dikirim"
+        let pinned = all.filter { $0.pinned != nil }.count
+        info.stringValue = "\(all.count - pinned) dari maks \(app.historyLimit) clip · " +
+            (pinned > 0 ? "\(pinned) disematkan · " : "") + "\(pending) belum dikirim"
         let remote = app.lanMode ? "HP (Wi-Fi lokal)" : "server & browser"
         hint.stringValue = app.syncActive
             ? "Centang clip lalu klik \"Kirim yang dicentang\" untuk mengirimnya ke \(remote). Klik dua kali sebuah clip untuk menyalinnya ke clipboard Mac."
@@ -3517,6 +3997,16 @@ final class ClipboardPage: NSViewController, NSTableViewDataSource, NSTableViewD
             b.state = checked.contains(c.id) ? .on : .off
             b.tag = c.id
             return b
+        case "pin":
+            let on = c.pinned != nil
+            let b = NSButton(image: NSImage(systemSymbolName: on ? "pin.fill" : "pin",
+                                            accessibilityDescription: on ? "Lepas sematan" : "Sematkan") ?? NSImage(),
+                             target: self, action: #selector(togglePin(_:)))
+            b.isBordered = false
+            b.contentTintColor = on ? .controlAccentColor : .tertiaryLabelColor
+            b.toolTip = on ? "Disematkan · klik untuk melepas" : "Klik untuk menyematkan (tidak terbuang oleh batas riwayat)"
+            b.tag = c.id
+            return b
         case "title": return cell(c.title, .labelColor, tip: c.text.map { String($0.prefix(600)) })
         case "from": return cell(c.source, .secondaryLabelColor)
         case "time": return cell(Calendar.current.isDateInToday(c.time) ? clock.string(from: c.time) : day.string(from: c.time),
@@ -3544,6 +4034,10 @@ final class ClipboardPage: NSViewController, NSTableViewDataSource, NSTableViewD
     @objc func toggleCheck(_ b: NSButton) {
         if b.state == .on { checked.insert(b.tag) } else { checked.remove(b.tag) }
         updateButtons()
+    }
+
+    @objc func togglePin(_ b: NSButton) {
+        app?.history.togglePin(b.tag) // riwayat berubah → tabel dimuat ulang lewat reloadClips
     }
 
     @objc func checkPending() {
@@ -3587,7 +4081,7 @@ final class ClipboardPage: NSViewController, NSTableViewDataSource, NSTableViewD
 }
 
 final class SettingsWindow: NSObject {
-    enum Tab: Int { case general, connection, clipboard, about }
+    enum Tab: Int { case general, connection, clipboard, shortcuts, about }
     static let size = NSSize(width: 640, height: 540)
 
     unowned let app: AppDelegate
@@ -3596,6 +4090,7 @@ final class SettingsWindow: NSObject {
     private let general = FormPage()
     private let connection = FormPage()
     private let clips = ClipboardPage()
+    private let keys = FormPage()
     private let about = FormPage()
     private var signature = ""
     private var pending = false
@@ -3609,6 +4104,31 @@ final class SettingsWindow: NSObject {
     private lazy var persistSwitch = Form.toggle(self, #selector(persistChanged(_:)))
     /// Satu switch per item di `AppDelegate.menuLinks` (urutannya sama)
     private lazy var menuSwitches: [NSSwitch] = AppDelegate.menuLinks.map { _ in Form.toggle(self, #selector(menuLinkChanged(_:))) }
+    // kontrol tab Pintasan
+    private lazy var recorders: [(ShortcutAction, ShortcutRecorder)] = ShortcutAction.allCases.map { a in
+        let r = ShortcutRecorder()
+        r.onChange = { [weak self] s in self?.app.setShortcut(s, for: a) ?? false }
+        // selama merekam, pintasan global dilepas supaya kombinasi yang sudah terdaftar bisa direkam ulang
+        r.onRecording = { [weak self] on in
+            guard let self else { return }
+            if on { self.app.hotKeys.unregisterAll() } else { self.app.registerHotKeys() }
+        }
+        return (a, r)
+    }
+    private lazy var digitsSwitch = Form.toggle(self, #selector(digitsChanged(_:)))
+    /// Satu popup per `MenuAction` (urutannya sama): ⌥ / ⌃ / ⇧ / Mati
+    private lazy var modifierPopups: [NSPopUpButton] = MenuAction.allCases.map { _ in
+        let p = NSPopUpButton(frame: .zero, pullsDown: false)
+        for m in AppDelegate.menuModifiers {
+            p.addItem(withTitle: "\(m.symbol) \(m.name)")
+            p.lastItem?.representedObject = m.key
+        }
+        p.addItem(withTitle: "Mati")
+        p.lastItem?.representedObject = "none"
+        p.target = self
+        p.action = #selector(modifierChanged(_:))
+        return p
+    }
     private lazy var limitPopup: NSPopUpButton = {
         let p = NSPopUpButton(frame: .zero, pullsDown: false)
         for n in AppDelegate.historyLimits {
@@ -3650,7 +4170,8 @@ final class SettingsWindow: NSObject {
         clips.app = app
         tabs.tabStyle = .toolbar
         let pages: [(NSViewController, String, String)] = [(general, "Umum", "gearshape"), (connection, "Koneksi", "network"),
-                                                           (clips, "Clipboard", "list.bullet.rectangle"), (about, "Tentang", "info.circle")]
+                                                           (clips, "Clipboard", "list.bullet.rectangle"), (keys, "Pintasan", "keyboard"),
+                                                           (about, "Tentang", "info.circle")]
         for (vc, title, icon) in pages {
             vc.title = title
             let item = NSTabViewItem(viewController: vc)
@@ -3680,7 +4201,8 @@ final class SettingsWindow: NSObject {
                          imagesSwitch),
             ]),
             Form.section("Riwayat", [
-                Form.row("Jumlah clip yang diingat", "Clip terlama dibuang saat batas tercapai.", limitPopup),
+                Form.row("Jumlah clip yang diingat", "Clip terlama dibuang saat batas tercapai. Clip yang disematkan " +
+                         "tidak dihitung dan tidak pernah dibuang.", limitPopup),
                 Form.row("Simpan riwayat di Mac", "Riwayat tetap ada setelah PasteLAN / Mac di-restart (seperti CopyClip). " +
                          "Disimpan hanya di Mac ini (folder Application Support, hanya bisa dibaca akun Anda). " +
                          "Mati = hanya di memori, hilang saat PasteLAN ditutup.", persistSwitch),
@@ -3691,6 +4213,40 @@ final class SettingsWindow: NSObject {
             // "Pengaturan…" selalu tampil di menu, jadi tidak ada di sini
             Form.section("Item di menu", zip(AppDelegate.menuLinks, menuSwitches).map { Form.row($0.title, $0.detail, $1) }),
         ])
+        keys.set(shortcutSections())
+    }
+
+    /// Tab Pintasan: pintasan global, pintasan selama menu terbuka (⌘0–9, modifier + klik, Pengaturan, Keluar)
+    private func shortcutSections() -> [NSView] {
+        func recorderRow(_ a: ShortcutAction, _ r: ShortcutRecorder) -> NSView {
+            let x = NSButton(image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Hapus pintasan") ?? NSImage(),
+                             target: r, action: #selector(ShortcutRecorder.clear))
+            x.isBordered = false
+            x.contentTintColor = .tertiaryLabelColor
+            x.toolTip = "Hapus pintasan"
+            return Form.row(a.title, a.detail, Form.stack([r, x], vertical: false, spacing: 4))
+        }
+        let global = recorders.filter { $0.0.global }.map { recorderRow($0.0, $0.1) }
+        let local = recorders.filter { !$0.0.global }.map { recorderRow($0.0, $0.1) }
+        let mods = zip(MenuAction.allCases, modifierPopups).map { a, p in
+            Form.row(a.title, "Tahan tombol ini lalu klik clip di menu (atau tombol ini + ⌘0–⌘9). " +
+                     "Memilih tombol yang sudah dipakai aksi lain akan menukar keduanya.", p)
+        }
+        let reset = Form.button("Kembalikan default", self, #selector(resetShortcuts))
+        return [
+            Form.section("Global (dari aplikasi mana saja)", [
+                Form.note("Klik tombol pintasan lalu tekan kombinasi baru (wajib memakai ⌘ atau ⌃). ⌫ menghapus, ⎋ membatalkan. " +
+                          "Tidak butuh izin Aksesibilitas.", width: 560),
+            ] + global),
+            Form.section("Di menu PasteLAN (selama menu terbuka)", [
+                Form.row("⌘0–⌘9 untuk sepuluh clip teratas", "Menyalin clip riwayat ke-0 sampai ke-9. Di daftar sematan " +
+                         "⌘0–⌘9 menyalin clip sematan.", digitsSwitch),
+            ] + mods + local),
+            Form.section("Atur ulang", [
+                Form.row("Kembalikan semua pintasan", "⌃⌥V menu, ⌃⌥S daftar sematan, ⌃⌥P sematkan clip terakhir, " +
+                         "⌃ kirim, ⌥ hapus, ⇧ sematkan, ⌘, Pengaturan, ⌘Q Keluar.", reset),
+            ]),
+        ]
     }
 
     private func rebuild() {
@@ -3708,6 +4264,12 @@ final class SettingsWindow: NSObject {
             limitPopup.lastItem?.tag = app.historyLimit
         }
         limitPopup.selectItem(withTag: app.historyLimit)
+        for (a, r) in recorders where !r.recording { r.shortcut = app.shortcut(a) }
+        digitsSwitch.state = app.menuDigits ? .on : .off
+        for (a, p) in zip(MenuAction.allCases, modifierPopups) {
+            let key = app.menuModifierKey(a)
+            p.selectItem(at: max(0, p.itemArray.firstIndex { ($0.representedObject as? String) == key } ?? 0))
+        }
 
         // Koneksi & Tentang dibangun ulang hanya kalau isinya berubah
         let flags: [Bool] = [app.lanMode, app.sharing, app.listening, app.loggedIn, app.updater.hasUpdate, app.lan.shareURL != nil]
@@ -3815,6 +4377,16 @@ final class SettingsWindow: NSObject {
     }
     @objc func useServer() { app.setMode("server") }
     @objc func useLAN() { app.setMode("lan") }
+    @objc func digitsChanged(_ s: NSSwitch) { app.d.set(s.state == .on, forKey: "menuDigits") } // menu dibangun ulang setiap dibuka
+    @objc func modifierChanged(_ p: NSPopUpButton) {
+        guard let i = modifierPopups.firstIndex(where: { $0 === p }), let key = p.selectedItem?.representedObject as? String else { return }
+        app.setMenuModifier(key, for: MenuAction.allCases[i])
+        reload() // popup aksi lain ikut berubah kalau modifier-nya ditukar
+    }
+    @objc func resetShortcuts() {
+        app.resetShortcuts()
+        reload()
+    }
 }
 
 // MARK: - Entry point
