@@ -37,8 +37,8 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
   jadi banyak clip bisa dihapus / dikirim berturut-turut
 - **Sematkan clip** (pin): **tahan ⇧ lalu klik** sebuah clip di menu (atau ⇧⌘0–⇧⌘9), klik ikon pin di
   **Clipboard manager**, atau tekan **⌃⌥P** dari aplikasi mana saja untuk menyematkan clip terakhir. Clip sematan tampil
-  di bagian **Disematkan** di atas riwayat, tidak terbuang oleh batas riwayat, dan tidak ikut **Hapus riwayat…**.
-  **⌃⌥S** membuka daftar clip sematan di posisi kursor, **⌃⌥V** membuka menu PasteLAN
+  paling atas dengan ikon pin (**⌘0**, **⌘1**, … sesuai urutan sematan), tidak terbuang oleh batas riwayat, dan tidak ikut
+  **Hapus riwayat…**. **⌃⌥V** membuka menu PasteLAN
 - **Pintasan bisa diatur** di **Pengaturan… → Pintasan**: pintasan global (tanpa izin Aksesibilitas), ⌘0–⌘9,
   modifier untuk kirim / hapus / sematkan (⌃ / ⌥ / ⇧ + klik), serta ⌘, dan ⌘Q di menu
 - **Menu ringkas**: di bawah riwayat hanya **Buka PasteLAN di browser** dan **Pengaturan…**; status, Tambah HP,

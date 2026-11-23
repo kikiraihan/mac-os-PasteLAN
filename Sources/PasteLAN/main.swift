@@ -2125,14 +2125,13 @@ struct Shortcut: Equatable {
 
 /// Aksi yang punya pintasan sendiri. `global` = berlaku dari aplikasi mana saja; selain itu hanya selama menu terbuka.
 enum ShortcutAction: String, CaseIterable {
-    case openMenu, openPinned, pinLatest, openManager, toggleSync, settings, quit
+    case openMenu, pinLatest, openManager, toggleSync, settings, quit
 
     var global: Bool { self != .settings && self != .quit }
 
     var title: String {
         switch self {
         case .openMenu: return "Buka menu PasteLAN"
-        case .openPinned: return "Buka daftar clip sematan"
         case .pinLatest: return "Sematkan / lepas sematan clip terakhir"
         case .openManager: return "Buka Clipboard manager"
         case .toggleSync: return "Autosync nyala / mati"
@@ -2144,7 +2143,6 @@ enum ShortcutAction: String, CaseIterable {
     var detail: String {
         switch self {
         case .openMenu: return "Menu riwayat terbuka tanpa klik ikon di menu bar; ketik untuk mencari, ⌘0–⌘9 untuk menyalin."
-        case .openPinned: return "Menu kecil berisi clip yang disematkan saja, muncul di posisi kursor (⌘0–⌘9 untuk menyalin)."
         case .pinLatest: return "Clip paling atas di riwayat (biasanya yang terakhir Anda copy)."
         case .openManager: return "Tab Clipboard di Pengaturan."
         case .toggleSync: return "Sama seperti saklar Autosync di tab Umum."
@@ -2156,7 +2154,6 @@ enum ShortcutAction: String, CaseIterable {
     var defaultShortcut: Shortcut? {
         switch self {
         case .openMenu: return Shortcut(keyCode: UInt16(kVK_ANSI_V), mods: [.control, .option], key: "v")
-        case .openPinned: return Shortcut(keyCode: UInt16(kVK_ANSI_S), mods: [.control, .option], key: "s")
         case .pinLatest: return Shortcut(keyCode: UInt16(kVK_ANSI_P), mods: [.control, .option], key: "p")
         case .openManager, .toggleSync: return nil
         case .settings: return Shortcut(keyCode: UInt16(kVK_ANSI_Comma), mods: [.command], key: ",")
@@ -2663,7 +2660,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     func runShortcut(_ a: ShortcutAction) {
         switch a {
         case .openMenu: if !menuOpen { item.button?.performClick(nil) }
-        case .openPinned: openPinnedMenu()
         case .pinLatest: pinLatest()
         case .openManager: openClipboardManager()
         case .toggleSync: toggleSharing()
@@ -3199,16 +3195,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             e.isEnabled = false
             put(e)
         }
-        // clip yang disematkan: bagian sendiri di atas riwayat, urutannya tetap
+        // clip yang disematkan paling atas (ikon pin, urutan tetap sesuai waktu disematkan), lalu riwayat biasa;
+        // nomor ⌘0–⌘9 dihitung dari clip sematan pertama
         let pinned = list.filter { $0.pinned != nil }.sorted { ($0.pinned ?? .distantPast) < ($1.pinned ?? .distantPast) }
         let recent = list.filter { $0.pinned == nil }
-        if !pinned.isEmpty {
-            put(menuNote("Disematkan"))
-            for c in pinned { clipMenuItems(c, key: "").forEach(put) }
-            if !recent.isEmpty { put(.separator()) }
-        }
         var more: NSMenu?
-        for (n, c) in recent.enumerated() {
+        for (n, c) in (pinned + recent).enumerated() {
             // ⌘0 … ⌘9 untuk sepuluh clip teratas (berlaku selama menu terbuka; bisa dimatikan di Pengaturan → Pintasan)
             let rows = clipMenuItems(c, key: n < 10 && menuDigits ? "\(n)" : "")
             if n < inlineClips {
@@ -3218,7 +3210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                     let sub = NSMenu()
                     sub.autoenablesItems = false
                     sub.delegate = self // hover gambar di submenu juga menampilkan pratinjau
-                    let mi = NSMenuItem(title: "Riwayat lainnya (\(recent.count - inlineClips))", action: nil, keyEquivalent: "")
+                    let mi = NSMenuItem(title: "Riwayat lainnya (\(list.count - inlineClips))", action: nil, keyEquivalent: "")
                     mi.submenu = sub
                     put(mi)
                     more = sub
@@ -3243,8 +3235,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
     }
 
     /// Baris menu untuk satu clip: item utama + item alternatif (tahan modifier → Kirim / Hapus / Sematkan, sesuai
-    /// Pengaturan → Pintasan). `hover`: isi teks / gambar tampil di panel samping (menu utama), bukan tooltip biasa.
-    func clipMenuItems(_ c: LocalClip, key: String, hover: Bool = true) -> [NSMenuItem] {
+    /// Pengaturan → Pintasan).
+    func clipMenuItems(_ c: LocalClip, key: String) -> [NSMenuItem] {
         let it = NSMenuItem(title: c.title, action: #selector(recopy(_:)), keyEquivalent: key)
         it.target = self
         it.representedObject = c.id
@@ -3257,12 +3249,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             " · klik untuk menyalin ke clipboard Mac" + (hints.isEmpty ? "" : ", " + hints.joined(separator: ", "))
         // teks: isi lengkap (dibatasi) tampil di atas, catatan aksi tetap di bagian paling bawah
         // (di panel `imageHover`, bukan tooltip biasa yang bisa terpotong di atas layar)
-        if hover, c.previewText() != nil, let tip = it.toolTip {
+        if c.previewText() != nil, let tip = it.toolTip {
             hoverTips[c.id] = tip
             it.toolTip = nil
         }
         // gambar yang isinya sudah ada di Mac: catatan ini tampil di panel pratinjau (bersama gambarnya)
-        if hover, c.kind == "image", c.data != nil, let tip = it.toolTip {
+        if c.kind == "image", c.data != nil, let tip = it.toolTip {
             hoverTips[c.id] = tip
             it.toolTip = nil
         }
@@ -3290,7 +3282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
                 alt = NSMenuItem(title: on ? "Lepas sematan: \(c.title)" : "Sematkan: \(c.title)",
                                  action: #selector(togglePinClip(_:)), keyEquivalent: key)
                 alt.image = symbol(on ? "pin.slash" : "pin")
-                alt.toolTip = on ? "Kembalikan ke riwayat biasa" : "Tampil di bagian \"Disematkan\" dan tidak terbuang oleh batas riwayat"
+                alt.toolTip = on ? "Kembalikan ke riwayat biasa" : "Tampil paling atas (ikon pin) dan tidak terbuang oleh batas riwayat"
             }
             alt.keyEquivalentModifierMask = key.isEmpty ? [m.flag] : [.command, m.flag]
             alt.isAlternate = true
@@ -3502,25 +3494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         history.togglePin(c.id)
         flash(c.pinned != nil ? "pin.fill" : "pin.slash")
     }
-    /// Pintasan global: menu kecil berisi clip yang disematkan saja, di posisi kursor
-    func openPinnedMenu() {
-        guard !menuOpen else { return }
-        let m = NSMenu()
-        m.autoenablesItems = false
-        let pinned = history.pinnedItems
-        if pinned.isEmpty {
-            let hint = menuModifier(.pin).map { "tahan \($0.symbol) lalu klik clip di menu PasteLAN" } ?? "klik ikon pin di Clipboard manager"
-            m.addItem(menuNote("Belum ada clip yang disematkan (\(hint))"))
-        } else {
-            m.addItem(menuNote("Disematkan"))
-        }
-        for (n, c) in pinned.enumerated() {
-            clipMenuItems(c, key: n < 10 && menuDigits ? "\(n)" : "", hover: false).forEach { m.addItem($0) }
-        }
-        m.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-    }
-    /// Hapus / kirim / sematkan dari menu utama (juga submenu "Riwayat lainnya") → menu dibuka lagi;
-    /// dari daftar sematan (pintasan global) tidak
+    /// Hapus / kirim / sematkan dari menu (juga submenu "Riwayat lainnya") → menu dibuka lagi
     func reopenMenu(from s: NSMenuItem) {
         if s.menu === menu || s.menu?.supermenu === menu { reopenMenu() }
     }
@@ -3632,9 +3606,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
         Pengaturan → Umum.
 
         Sematkan: tahan ⇧ (Shift) lalu klik sebuah clip (atau ⇧⌘0–⇧⌘9), atau tekan ⌃⌥P (default) untuk menyematkan clip terakhir. \
-        Clip yang disematkan tampil di bagian "Disematkan" di atas riwayat, tidak terbuang oleh batas riwayat, dan tidak \
-        ikut "Hapus riwayat…". ⌃⌥S membuka daftar clip sematan di posisi kursor dari aplikasi mana saja, ⌃⌥V membuka menu \
-        PasteLAN. Semua pintasan (termasuk ⌃ / ⌥ / ⇧ + klik) bisa diubah di Pengaturan → Pintasan.
+        Clip yang disematkan tampil paling atas dengan ikon pin (⌘0, ⌘1, … sesuai urutan sematan), tidak terbuang oleh \
+        batas riwayat, dan tidak ikut "Hapus riwayat…". ⌃⌥V membuka menu PasteLAN dari aplikasi mana saja. Semua pintasan (termasuk ⌃ / ⌥ / ⇧ + klik) bisa diubah di Pengaturan → Pintasan.
 
         Autosync: "Autosync dengan server & browser" (Pengaturan → Umum, atau di menu bila ditampilkan) membuat setiap copy di Mac otomatis terkirim dan kiriman \
         dari HP otomatis masuk. Kalau dimatikan, PasteLAN jadi clipboard manager offline biasa: semua copy tetap masuk \
@@ -4239,11 +4212,11 @@ final class SettingsWindow: NSObject {
                           "Tidak butuh izin Aksesibilitas.", width: 560),
             ] + global),
             Form.section("Di menu PasteLAN (selama menu terbuka)", [
-                Form.row("⌘0–⌘9 untuk sepuluh clip teratas", "Menyalin clip riwayat ke-0 sampai ke-9. Di daftar sematan " +
-                         "⌘0–⌘9 menyalin clip sematan.", digitsSwitch),
+                Form.row("⌘0–⌘9 untuk sepuluh clip teratas", "Menyalin clip ke-0 sampai ke-9, dihitung dari " +
+                         "clip yang disematkan (paling atas).", digitsSwitch),
             ] + mods + local),
             Form.section("Atur ulang", [
-                Form.row("Kembalikan semua pintasan", "⌃⌥V menu, ⌃⌥S daftar sematan, ⌃⌥P sematkan clip terakhir, " +
+                Form.row("Kembalikan semua pintasan", "⌃⌥V menu, ⌃⌥P sematkan clip terakhir, " +
                          "⌃ kirim, ⌥ hapus, ⇧ sematkan, ⌘, Pengaturan, ⌘Q Keluar.", reset),
             ]),
         ]
