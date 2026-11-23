@@ -35,6 +35,12 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
   **tahan ⌥ lalu klik** (atau ⌥⌘0–⌥⌘9) untuk menghapus satu clip, bisa diurungkan dari menu; **tahan ⌃ lalu klik** untuk
   mengirim satu clip saja ke server / HP (berguna saat autosync mati); menu langsung terbuka lagi setelah hapus / kirim,
   jadi banyak clip bisa dihapus / dikirim berturut-turut
+- **Sematkan clip** (pin): **tahan ⇧ lalu klik** sebuah clip di menu (atau ⇧⌘0–⇧⌘9), klik ikon pin di
+  **Clipboard manager**, atau tekan **⌃⌥P** dari aplikasi mana saja untuk menyematkan clip terakhir. Clip sematan tampil
+  di bagian **Disematkan** di atas riwayat, tidak terbuang oleh batas riwayat, dan tidak ikut **Hapus riwayat…**.
+  **⌃⌥S** membuka daftar clip sematan di posisi kursor, **⌃⌥V** membuka menu PasteLAN
+- **Pintasan bisa diatur** di **Pengaturan… → Pintasan**: pintasan global (tanpa izin Aksesibilitas), ⌘0–⌘9,
+  modifier untuk kirim / hapus / sematkan (⌃ / ⌥ / ⇧ + klik), serta ⌘, dan ⌘Q di menu
 - **Menu ringkas**: di bawah riwayat hanya **Buka PasteLAN di browser** dan **Pengaturan…**; status, Tambah HP,
   Autosync, Dengarkan kiriman dari server, dan Clipboard manager bisa ditampilkan lagi di
   **Pengaturan… → Umum → Item di menu**

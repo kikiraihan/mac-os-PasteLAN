@@ -37,6 +37,9 @@ Merge ke `main` dengan versi yang belum punya tag akan otomatis membuat tag `v<v
     - Server: klien `PasteServer` (hanya Foundation), token di Keychain.
     - Riwayat Mac: `History` (di memori) + `HistoryStore` (salinan di `~/Library/Application Support/PasteLAN/History`,
       bisa dimatikan). Keduanya hanya Foundation → bisa diuji di Linux.
+      Clip bisa disematkan (`LocalClip.pinned`): tidak dihitung batas riwayat & tidak ikut "Hapus riwayat".
+    - Pintasan: `Shortcut` / `ShortcutAction` / `MenuAction` + `HotKeys` (Carbon `RegisterEventHotKey`, tanpa izin
+      Aksesibilitas), disimpan di UserDefaults (`shortcut.<aksi>`, `menuMod.<aksi>`, `menuDigits`), tab Pengaturan → Pintasan.
     - Wi-Fi lokal: `LANServer` + `HTTPServer` (Network.framework) + halaman HP `enum Page`. Isi `/api/` dienkripsi
       ChaCha20-Poly1305 (Swift `CryptoKit` ⇄ JS `AEAD` di `enum Page`, format `nonce + ciphertext + tag`,
       AAD `PL1|req|…`, `PL1|body|…`, `PL1|resp|…`). Ubah format di kedua sisi sekaligus.
