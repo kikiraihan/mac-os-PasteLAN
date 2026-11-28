@@ -43,6 +43,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *app) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	a.apk = newAPKRelease("off") // tes tidak menghubungi GitHub (lihat release_test.go)
 	web, _ := fs.Sub(webFiles, "web")
 	ts := httptest.NewServer(a.routes(web))
 	t.Cleanup(ts.Close)

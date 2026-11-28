@@ -25,7 +25,13 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: android-actions/setup-android@v3
+      # Runner ubuntu-latest sudah membawa Android SDK ($ANDROID_HOME); platform/build-tools yang kurang diunduh
+      # sendiri oleh Gradle. (android-actions/setup-android@v3 gagal: memasang paket lama "tools" yang sudah dihapus.)
+      - name: Android SDK bawaan runner
+        run: |
+          test -d "$ANDROID_HOME" || { echo "::error::ANDROID_HOME tidak ada di runner"; exit 1; }
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
       - uses: actions/setup-go@v5
         with:
           go-version-file: server/go.mod

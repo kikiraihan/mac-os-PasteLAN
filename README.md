@@ -71,7 +71,8 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
    kalau login dengan password diaktifkan di admin.
 3. **HP**: menu Mac → **Tambah HP (scan QR)…**, scan dengan kamera HP → HP langsung masuk **tanpa mengetik
    password**. Lalu **Install** / **Tambahkan ke Layar Utama**. (Atau buka link setup dari admin di HP.)
-   **Android**: pasang `PasteLAN.apk` dari [Releases](https://github.com/kikiraihan/mac-os-PasteLAN/releases/latest),
+   **Android**: pasang `PasteLAN.apk` (tombol **Unduh** di halaman web PasteLAN / admin, atau
+   `https://server-anda/unduh/PasteLAN.apk`, atau [Releases](https://github.com/kikiraihan/mac-os-PasteLAN/releases/latest)),
    buka → **Scan QR dari Mac** (atau tempel link setup) → izinkan notifikasi.
 4. **HP → Mac**: tempel teks / pilih gambar, tekan **Kirim**, lalu ⌘V di Mac.
    **Mac → HP**: copy apa saja di Mac, isinya muncul di HP.

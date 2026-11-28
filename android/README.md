@@ -20,6 +20,13 @@ satu APK untuk server PasteLAN mana pun. Hanya untuk **metode server** (bukan Wi
 - **Periksa pembaruan** (Pengaturan → Tentang): membandingkan versi dengan rilis GitHub, tombol Unduh membuka
   `PasteLAN.apk` di browser; Android memastikan tanda tangannya sama dengan versi terpasang.
 
+## Unduh
+
+- Dari server sendiri: `https://server-anda/unduh/PasteLAN.apk` (tanpa login, dialihkan ke rilis GitHub terbaru).
+  Ditawarkan di halaman web PasteLAN (spanduk di browser Android + Pengaturan → Aplikasi Android + form masuk),
+  halaman admin (Ringkasan → **Aplikasi Android**, ada tombol Salin tautan), dan dialog **Tambah HP (scan QR)…** di Mac.
+- Atau langsung dari [Releases](https://github.com/kikiraihan/mac-os-PasteLAN/releases/latest).
+
 ## Cara kerja notifikasi
 
 Tanpa Google / FCM: layanan latar depan memegang **long-poll** `GET /api/items?wait=1` ke server (sama dengan

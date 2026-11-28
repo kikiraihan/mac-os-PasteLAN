@@ -31,6 +31,7 @@
   <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
   <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></symbol>
   <symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" class="fill"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.6-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.6 4.5L20 16M20 20v-4h-4"/></symbol>
 </svg>
 
@@ -111,6 +112,19 @@
 
         <div class="card">
           <div class="card-h">
+            <div><h2>Aplikasi Android</h2>
+              <p class="muted" id="apkText">Memeriksa rilis…</p></div>
+          </div>
+          <div class="apk-row" id="apkRow" hidden>
+            <a class="btn primary" href="/unduh/PasteLAN.apk"><svg><use href="#i-down"/></svg><span id="apkBtnText">Unduh APK</span></a>
+            <button class="btn ghost" type="button" id="apkCopy"><svg><use href="#i-copy"/></svg>Salin tautan</button>
+          </div>
+          <p class="hint" id="apkHint" hidden>Tautan unduh bisa dibuka tanpa login: <code id="apkUrl"></code>. Di HP: pasang APK →
+            buka PasteLAN → <b>Scan QR dari Mac</b>, atau tempel link setup dari kartu di atas.</p>
+        </div>
+
+        <div class="card">
+          <div class="card-h">
             <div><h2>Terakhir aktif</h2></div>
             <a class="btn ghost sm" href="#perangkat">Lihat semua</a>
           </div>
@@ -124,7 +138,7 @@
           <div class="card-h">
             <div><h2>Tambah perangkat</h2>
               <p class="muted">Mac: menu PasteLAN → Pengaturan… → Koneksi → "Atur server &amp; login…", lalu tempel link.
-                HP: buka link di browser.</p></div>
+                HP: buka link di browser, atau tempel di aplikasi Android PasteLAN (Ringkasan → Aplikasi Android).</p></div>
           </div>
           <button class="btn primary" type="button" data-action="newLink"><svg><use href="#i-plus"/></svg>Buat link setup</button>
           <div class="ticket" data-ticket hidden></div>

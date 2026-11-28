@@ -66,6 +66,7 @@
     $('login').hidden = false;
     setStatus('off', 'Belum masuk');
     $('devname').value = localStorage.getItem('pastelan-name') || guessName();
+    updateApk(false);
     $('password').focus();
     // login dengan password bisa dimatikan admin → hanya link setup / QR
     api('/api/config').then(c => {
@@ -80,6 +81,7 @@
     $('login').hidden = true;
     $('app').hidden = false;
     showEmpty();
+    updateApk(true);
     if (!polling) poll();
   }
   $('login').onsubmit = async e => {
@@ -391,6 +393,37 @@
     try { await installEvt.userChoice; } catch (e) {}
     installEvt = null;
     updateInstall();
+  };
+
+  // ---------- aplikasi Android ----------
+  // Tawaran APK: spanduk di atas daftar (hanya browser Android, bisa ditutup & diingat), bagian di Pengaturan, dan
+  // ajakan di form masuk. /unduh/PasteLAN.apk dialihkan server ke rilis GitHub (tanpa login: HP baru perlu aplikasinya
+  // dulu sebelum bisa scan QR). Info rilis dari /api/app/android (tanpa rahasia).
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  let apkInfo = null;
+  const apkDismissed = () => { try { return localStorage.getItem('pastelan-apk-hidden') === '1'; } catch (e) { return false; } };
+  async function updateApk(inApp) {
+    if (!apkInfo) {
+      try { apkInfo = await api('/api/app/android'); } catch (e) { apkInfo = null; return; }
+    }
+    const j = apkInfo;
+    $('apkBanner').hidden = !(inApp && isAndroid && j.available && !apkDismissed());
+    $('apkLogin').hidden = !(isAndroid && j.available);
+    $('apkLink').hidden = !j.available;
+    $('apkLink').textContent = 'Unduh PasteLAN.apk' + (j.version ? ' ' + j.version : '');
+    $('apkHint').textContent = !j.available
+      ? 'Aplikasi Android belum tersedia di rilis PasteLAN terbaru.'
+      : isAndroid
+        ? 'Notifikasi kiriman dengan tombol Salin (langsung ke clipboard, juga saat aplikasi ditutup). Setelah terunduh, ' +
+          'buka PasteLAN.apk → Pasang (izinkan browser "memasang aplikasi tak dikenal" bila diminta), lalu masuk lewat ' +
+          '"Scan QR dari Mac" atau link setup.'
+        : 'Aplikasi Android: notifikasi kiriman dengan tombol Salin. Buka halaman ini di HP Android untuk mengunduh & ' +
+          'memasang langsung.';
+  }
+  $('apkLater').onclick = () => {
+    try { localStorage.setItem('pastelan-apk-hidden', '1'); } catch (e) {}
+    $('apkBanner').hidden = true;
+    toast('Aplikasi Android tetap bisa diunduh dari Pengaturan');
   };
 
   // ---------- notifikasi push ----------

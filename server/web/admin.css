@@ -197,6 +197,8 @@ input:disabled, select:disabled { opacity: .5; }
 .usage-row { display: flex; justify-content: space-between; font-size: 14px; font-weight: 600; }
 
 /* ---------- Tiket link setup ---------- */
+.apk-row { display: flex; gap: 8px; flex-wrap: wrap; }
+#apkHint code { word-break: break-all; }
 .ticket { margin-top: 16px; border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, var(--line)); border-radius: 12px;
   background: var(--accent-soft); padding: 16px; }
 .ticket .link { font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; color: var(--ink);

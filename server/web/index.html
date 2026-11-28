@@ -25,9 +25,19 @@
     <label>Nama perangkat<input id="devname" maxlength="40" autocomplete="off"></label>
     <button id="loginBtn" type="submit">Masuk</button>
     <div id="loginErr" class="err"></div>
+    <p id="apkLogin" class="hint" hidden>Pakai HP Android? <a href="/unduh/PasteLAN.apk">Unduh aplikasi PasteLAN</a>:
+      notifikasi kiriman dengan tombol Salin, juga saat aplikasinya ditutup. Setelah terpasang, masuk lewat
+      "Scan QR dari Mac" di aplikasinya.</p>
   </form>
 
   <div id="app" hidden>
+    <div id="apkBanner" class="card notice apk" hidden>
+      <img src="/icon-192.png" alt="" width="40" height="40">
+      <div class="grow"><b>Pasang aplikasi Android</b>
+        <div class="hint">Kiriman muncul sebagai notifikasi dengan tombol Salin, juga saat aplikasi ditutup.</div></div>
+      <a class="btn" href="/unduh/PasteLAN.apk">Unduh</a>
+      <button id="apkLater" class="ghost" type="button" aria-label="Tutup tawaran aplikasi Android">✕</button>
+    </div>
     <div id="notifCard" class="card notice" hidden>
       <div id="notifText"></div>
       <div class="row">
@@ -55,6 +65,9 @@
       <div class="row"><button id="install" class="ghost" hidden>Install PasteLAN</button></div>
       <p id="notifHint" class="hint"></p>
       <div class="row"><button id="notifBtn" class="ghost" hidden>Aktifkan notifikasi</button></div>
+      <h3>Aplikasi Android</h3>
+      <p id="apkHint" class="hint"></p>
+      <div class="row"><a id="apkLink" class="btn ghost" href="/unduh/PasteLAN.apk" hidden>Unduh PasteLAN.apk</a></div>
       <h3>Perangkat yang login</h3>
       <div id="devices"></div>
       <div class="row">

@@ -47,6 +47,10 @@ sebagai aplikasi. Opsi A tetap terdokumentasi di `../opsi-a-mac-app-plus-browser
       salin otomatis, riwayat (ketuk = salin, tekan lama = salin / bagikan / hapus), kirim teks & gambar, Bagikan →
       PasteLAN, masuk dengan scan QR / link setup / password, periksa pembaruan. Server: item punya `notify`.
       Tes: `ParseTest`, `UiTest` (Robolectric + screenshot), `scripts/test-android.sh`; CI job `android` di `build.yml`
+- [x] v1.15.0: **unduh aplikasi Android dari web** (pola AI Todo): `GET /api/app/android` + `/unduh/PasteLAN.apk`
+      (302 ke rilis GitHub, tanpa login, cache 15 menit, `PASTELAN_RELEASE_REPO`); PWA: spanduk di browser Android (bisa
+      ditutup), Pengaturan → Aplikasi Android, ajakan di form masuk; admin: kartu Aplikasi Android (unduh + salin
+      tautan); dialog Tambah HP di Mac menyebut aplikasi Android. CI job android pakai SDK bawaan runner. Tes: `release_test.go`
 - [ ] Pemilik: buat kunci tanda tangan Android + secret `ANDROID_KEYSTORE_*` (`android/README.md`) supaya rilis berisi
       `PasteLAN.apk`
 - [ ] Uji aplikasi Android di HP nyata: scan QR, notifikasi → Salin (teks & gambar), salin otomatis, aplikasi ditutup,

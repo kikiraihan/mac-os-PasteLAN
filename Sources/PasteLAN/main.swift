@@ -3034,9 +3034,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSText
             f.dateFormat = "HH.mm"
             let a = NSAlert()
             a.messageText = "Tambah HP ke PasteLAN"
+            // Android: aplikasi PasteLAN (notifikasi dengan tombol Salin) diunduh dari server → <server>/unduh/PasteLAN.apk
+            let apk = (self.serverURL?.absoluteString ?? "server").trimmingCharacters(in: CharacterSet(charactersIn: "/")) +
+                "/unduh/PasteLAN.apk"
             a.informativeText = "Scan dengan kamera HP. HP langsung masuk tanpa password, lalu pilih \"Install\" / " +
-                "\"Tambahkan ke Layar Utama\".\n\nQR ini hanya untuk satu HP dan berlaku sampai \(f.string(from: expires)). " +
-                "Jangan bagikan / foto layar ini."
+                "\"Tambahkan ke Layar Utama\".\n\nAndroid: lebih baik pasang aplikasi PasteLAN (\(apk)), lalu scan " +
+                "lewat \"Scan QR dari Mac\" di aplikasinya.\n\nQR ini hanya untuk satu HP dan berlaku sampai " +
+                "\(f.string(from: expires)). Jangan bagikan / foto layar ini."
             let qr: CGFloat = 220
             let iv = NSImageView(frame: NSRect(x: 0, y: 0, width: qr, height: qr))
             iv.image = qrImage(url.absoluteString, points: qr)

@@ -71,6 +71,9 @@
   item hilang dari riwayat server atau saat keluar. Clipboard HP hanya dibaca saat aplikasi di depan (tombol Tempel,
   isi otomatis link setup).
 - Pemindai QR memakai Google Play services code scanner (diproses di HP, tanpa izin kamera untuk aplikasi).
+- Unduh dari web: server membaca info rilis dari `api.github.com` (tanpa data pengguna, cache 15 menit, tanpa
+  mengikuti redirect) dan hanya mengalihkan ke `https://github.com/<repo>/releases/download/…`. Tanpa login karena HP
+  baru perlu aplikasinya sebelum bisa masuk; APK publik di GitHub, jadi tidak ada yang bocor.
 - Pembaruan tidak dipasang otomatis: tombol Unduh membuka `PasteLAN.apk` di browser; Android menolak APK dengan
   tanda tangan berbeda dari yang terpasang. Kunci rilis hanya di secret CI (`ANDROID_KEYSTORE_*`).
 

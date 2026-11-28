@@ -23,6 +23,7 @@ type app struct {
 	store    *store
 	settings *settingsStore
 	push     *pusher // nil = notifikasi push nonaktif (kunci VAPID gagal dibuat / dibaca)
+	apk      *apkRelease
 }
 
 func newApp(password, adminPassword, dataDir string) (*app, error) {
@@ -39,7 +40,8 @@ func newApp(password, adminPassword, dataDir string) (*app, error) {
 		log.Printf("notifikasi push nonaktif: %v", err)
 		p = nil
 	}
-	return &app{auth: a, store: newStore(st.get().limits()), settings: st, push: p}, nil
+	return &app{auth: a, store: newStore(st.get().limits()), settings: st, push: p,
+		apk: newAPKRelease(env("PASTELAN_RELEASE_REPO", defaultReleaseRepo))}, nil
 }
 
 func (a *app) routes(web fs.FS) http.Handler {
@@ -49,6 +51,8 @@ func (a *app) routes(web fs.FS) http.Handler {
 		http.ServeFileFS(w, r, web, "admin.html")
 	})
 	mux.HandleFunc("GET /api/config", a.publicConfig)
+	mux.HandleFunc("GET /api/app/android", a.androidApp)
+	mux.HandleFunc("GET "+apkPath, a.downloadAPK)
 	mux.HandleFunc("POST /api/login", a.login)
 	mux.HandleFunc("POST /api/logout", a.authed(a.logout))
 	mux.HandleFunc("POST /api/pair", a.authed(a.newPair))
