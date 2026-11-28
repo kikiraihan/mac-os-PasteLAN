@@ -209,6 +209,20 @@ func TestPushNotify(t *testing.T) {
 		t.Fatalf("notifikasi gambar: %+v", m)
 	}
 
+	// item ditandai notify di jawaban polling (aplikasi Android bisa hanya memberi tahu kiriman ini)
+	_, b = do(t, ts, "GET", "/api/items", hp, nil, nil)
+	var poll struct {
+		Items []struct {
+			Text   string
+			Kind   string
+			Notify bool
+		}
+	}
+	_ = json.Unmarshal(b, &poll)
+	if n := len(poll.Items); n != 3 || poll.Items[0].Notify || !poll.Items[1].Notify || !poll.Items[2].Notify {
+		t.Fatalf("tanda notify di /api/items: %s", b)
+	}
+
 	// layanan push menjawab 410 (browser berhenti berlangganan) → langganan dibuang
 	f.mu.Lock()
 	f.status = http.StatusGone

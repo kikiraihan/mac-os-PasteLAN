@@ -162,6 +162,26 @@
     showSettings(j.settings);
     showStats(j);
     showDevices(j.devices);
+    loadApk();
+  }
+
+  // ---------- aplikasi Android (PasteLAN.apk dari rilis GitHub, lewat /unduh/PasteLAN.apk di server ini) ----------
+  async function loadApk() {
+    const url = location.origin + '/unduh/PasteLAN.apk';
+    try {
+      const j = await api('/api/app/android');
+      $('apkRow').hidden = $('apkHint').hidden = !j.available;
+      $('apkBtnText').textContent = 'Unduh APK' + (j.version ? ' ' + j.version : '');
+      $('apkUrl').textContent = url;
+      $('apkText').textContent = j.available
+        ? 'Notifikasi kiriman dengan tombol Salin (langsung ke clipboard HP, juga saat aplikasi ditutup), Bagikan → PasteLAN.'
+        : 'Belum tersedia di rilis terbaru' + (j.version ? ' (v' + j.version + ')' : '') +
+          '. Isi secret ANDROID_KEYSTORE_* di GitHub supaya rilis berisi PasteLAN.apk (android/README.md).';
+    } catch (e) { $('apkText').textContent = 'Gagal memeriksa rilis: ' + e.message; }
+    $('apkCopy').onclick = async () => {
+      try { await navigator.clipboard.writeText(url); toast('Tautan tersalin'); }
+      catch (e) { toast(url); }
+    };
   }
   $('reload').onclick = () => busy($('reload'), async () => { await load(); toast('Data diperbarui'); });
 

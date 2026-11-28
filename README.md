@@ -2,7 +2,8 @@
 
 Berbagi **copy-paste teks & gambar** antara Mac dan HP lewat **server PasteLAN milik Anda sendiri**.
 Ringan dan sederhana: aplikasi menu bar macOS (Swift, satu file) + server kecil (Go, satu binary, tanpa dependensi)
-+ halaman web yang bisa di-**install sebagai aplikasi (PWA)** di HP. Mac dan HP **tidak perlu di Wi-Fi yang sama**.
++ halaman web yang bisa di-**install sebagai aplikasi (PWA)** di HP + **aplikasi Android** (opsional, notifikasi dengan
+tombol Salin). Mac dan HP **tidak perlu di Wi-Fi yang sama**.
 
 Tidak punya server? Pilih metode **Wi-Fi lokal** di menu: Mac menjalankan server kecil sendiri, HP di jaringan yang
 sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
@@ -29,6 +30,10 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
   Utama" di Safari), tampil seperti aplikasi biasa
 - **Notifikasi di HP** untuk kiriman manual dari Mac (**⌃ + klik** sebuah clip di menu): potongan teks + tombol
   **Salin**. Clip dari autosync tidak memunculkan notifikasi. Di iPhone notifikasi tanpa tombol: ketuk lalu tekan Salin
+- **Aplikasi Android** ([`android/`](android/README.md), `PasteLAN.apk` di Releases): setiap kiriman baru muncul
+  sebagai **notifikasi dengan tombol Salin** — langsung masuk clipboard HP tanpa membuka aplikasi, juga saat aplikasi
+  ditutup (koneksi langsung ke server, tanpa Google). Pilihan: semua kiriman atau hanya ⌃ + klik, salin otomatis,
+  Bagikan → PasteLAN, scan QR dari Mac untuk masuk
 - Bisa dipakai dari **banyak perangkat** sekaligus (HP, tablet, laptop lain); tiap perangkat login sekali
 - **Clipboard manager di Mac** (gaya Clipy): riwayat langsung di menu (default 15 clip, diatur di **Pengaturan… → Umum**),
   klik item atau tekan **⌘0–⌘9** saat menu terbuka untuk menyalinnya lagi, plus kotak **Cari clip…**;
@@ -66,6 +71,9 @@ sama cukup scan QR code (lihat [Dua metode](#dua-metode)).
    kalau login dengan password diaktifkan di admin.
 3. **HP**: menu Mac → **Tambah HP (scan QR)…**, scan dengan kamera HP → HP langsung masuk **tanpa mengetik
    password**. Lalu **Install** / **Tambahkan ke Layar Utama**. (Atau buka link setup dari admin di HP.)
+   **Android**: pasang `PasteLAN.apk` (tombol **Unduh** di halaman web PasteLAN / admin, atau
+   `https://server-anda/unduh/PasteLAN.apk`, atau [Releases](https://github.com/kikiraihan/mac-os-PasteLAN/releases/latest)),
+   buka → **Scan QR dari Mac** (atau tempel link setup) → izinkan notifikasi.
 4. **HP → Mac**: tempel teks / pilih gambar, tekan **Kirim**, lalu ⌘V di Mac.
    **Mac → HP**: copy apa saja di Mac, isinya muncul di HP.
 
@@ -93,7 +101,8 @@ Mode Wi-Fi lokal:
 
 - Arah HP → Mac selalu butuh satu ketukan (**Kirim**): Android dan iOS tidak mengizinkan web/aplikasi
   membaca clipboard HP secara otomatis.
-- Halaman HP harus terbuka supaya menerima item baru dari Mac (setelah dibuka lagi, item yang terlewat langsung muncul).
+- Halaman HP (PWA) harus terbuka supaya menerima item baru dari Mac (setelah dibuka lagi, item yang terlewat langsung
+  muncul). Aplikasi Android tidak punya batasan ini (koneksi latar + notifikasi dengan tombol Salin).
 - Metode server butuh internet di Mac dan HP.
 
 ## Keamanan
@@ -180,6 +189,7 @@ cd server && go test ./... && go build -o pastelan-server .   # server (Go 1.24+
 | Admin | `/admin`, password dari environment; pengaturan di `settings.json` (0600) |
 | Halaman HP | HTML/CSS/JS biasa (tanpa framework / CDN) + service worker & manifest (PWA) |
 | Aplikasi Mac | Swift + AppKit, `URLSession`, token di Keychain, `NSPasteboard.changeCount` tiap 0,8 detik |
+| Aplikasi Android | Kotlin + Compose, layanan latar depan long-poll, token di Android Keystore ([`android/`](android/README.md)) |
 | Wi-Fi lokal | Server HTTP di Mac (`NWListener`), halaman HP ditanam di aplikasi, ChaCha20-Poly1305 (CryptoKit ⇄ JS) |
 
 Rencana pengembangan ada di [`_todo/`](_todo/), catatan keamanan & ide lanjutan di [`_techdebt/`](_techdebt/).
@@ -187,7 +197,8 @@ Rencana pengembangan ada di [`_todo/`](_todo/), catatan keamanan & ide lanjutan 
 ## Rilis
 
 Versi diatur di `Resources/Info.plist` (lihat [AGENTS.md](AGENTS.md)). Merge ke `main` dengan versi yang belum
-punya tag akan otomatis membuat tag `v<versi>` dan rilis lewat GitHub Actions (aplikasi Mac + binary server Linux).
+punya tag akan otomatis membuat tag `v<versi>` dan rilis lewat GitHub Actions (aplikasi Mac + binary server Linux +
+`PasteLAN.apk` bila secret `ANDROID_KEYSTORE_*` sudah diisi, lihat [`android/README.md`](android/README.md)).
 
 ### Tanda tangan rilis (auto-update)
 

@@ -1,7 +1,7 @@
 // Service worker PasteLAN: hanya menyimpan tampilan aplikasi (HTML/CSS/JS/ikon) supaya bisa di-install
 // dan terbuka cepat, plus notifikasi push. Isi clipboard (/api/) TIDAK PERNAH di-cache.
 'use strict';
-const CACHE = 'pastelan-v2';
+const CACHE = 'pastelan-v3';
 const SHELL = ['/', '/app.js', '/style.css', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -17,7 +17,8 @@ self.addEventListener('activate', e => {
 // jaringan dulu (update server langsung terpakai), cache hanya cadangan saat offline
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/')) return;
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/') ||
+    url.pathname.startsWith('/unduh/')) return; // unduhan APK = pengalihan ke GitHub, langsung oleh browser
   e.respondWith(fetch(e.request)
     .then(res => {
       if (res.ok && SHELL.includes(url.pathname)) {

@@ -23,6 +23,7 @@ type app struct {
 	store    *store
 	settings *settingsStore
 	push     *pusher // nil = notifikasi push nonaktif (kunci VAPID gagal dibuat / dibaca)
+	apk      *apkRelease
 }
 
 func newApp(password, adminPassword, dataDir string) (*app, error) {
@@ -39,7 +40,8 @@ func newApp(password, adminPassword, dataDir string) (*app, error) {
 		log.Printf("notifikasi push nonaktif: %v", err)
 		p = nil
 	}
-	return &app{auth: a, store: newStore(st.get().limits()), settings: st, push: p}, nil
+	return &app{auth: a, store: newStore(st.get().limits()), settings: st, push: p,
+		apk: newAPKRelease(env("PASTELAN_RELEASE_REPO", defaultReleaseRepo))}, nil
 }
 
 func (a *app) routes(web fs.FS) http.Handler {
@@ -49,6 +51,8 @@ func (a *app) routes(web fs.FS) http.Handler {
 		http.ServeFileFS(w, r, web, "admin.html")
 	})
 	mux.HandleFunc("GET /api/config", a.publicConfig)
+	mux.HandleFunc("GET /api/app/android", a.androidApp)
+	mux.HandleFunc("GET "+apkPath, a.downloadAPK)
 	mux.HandleFunc("POST /api/login", a.login)
 	mux.HandleFunc("POST /api/logout", a.authed(a.logout))
 	mux.HandleFunc("POST /api/pair", a.authed(a.newPair))
@@ -274,8 +278,9 @@ func (a *app) postText(w http.ResponseWriter, r *http.Request, d *device) {
 		jsonError(w, http.StatusBadRequest, "teks kosong / tidak valid")
 		return
 	}
-	it := a.store.add(&item{Kind: "text", Text: string(b), Size: len(b), From: d.Name, Device: d.ID})
-	if r.URL.Query().Get("notify") == "1" {
+	notify := r.URL.Query().Get("notify") == "1"
+	it := a.store.add(&item{Kind: "text", Text: string(b), Size: len(b), From: d.Name, Device: d.ID, Notify: notify})
+	if notify {
 		a.notifyDevices(it, d.ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": it.ID})
@@ -307,8 +312,9 @@ func (a *app) postImage(w http.ResponseWriter, r *http.Request, d *device) {
 		jsonError(w, http.StatusUnsupportedMediaType, "bukan gambar yang didukung (PNG, JPEG, GIF, WebP, HEIC)")
 		return
 	}
-	it := a.store.add(&item{Kind: "image", Mime: mime, Size: len(b), From: d.Name, Device: d.ID, data: b})
-	if r.URL.Query().Get("notify") == "1" {
+	notify := r.URL.Query().Get("notify") == "1"
+	it := a.store.add(&item{Kind: "image", Mime: mime, Size: len(b), From: d.Name, Device: d.ID, Notify: notify, data: b})
+	if notify {
 		a.notifyDevices(it, d.ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": it.ID})

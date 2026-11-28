@@ -11,6 +11,7 @@ halaman web / PWA ikut di dalamnya. Butuh ±20–40 MB RAM.
 | `PASTELAN_PASSWORD` | ✅¹ | – | Opsional: password bersama untuk login perangkat (min. 12, beda dari password admin). Bisa juga dibuat / dimatikan di admin |
 | `PASTELAN_ADDR` | | `127.0.0.1:8080` | Alamat dengar. Biarkan lokal; HTTPS lewat reverse proxy |
 | `PASTELAN_DATA` | | `data` | Folder `devices.json` (daftar perangkat + **hash** token + langganan notifikasi), `settings.json` (pengaturan admin) dan `push-key.pem` (kunci VAPID notifikasi, dibuat otomatis); bukan isi clipboard |
+| `PASTELAN_RELEASE_REPO` | | `kikiraihan/mac-os-PasteLAN` | Repo GitHub (publik) untuk unduhan aplikasi Android: `/unduh/PasteLAN.apk` dialihkan ke `PasteLAN.apk` di rilis terbaru. Info rilis dibaca dari `api.github.com` (cache 15 menit). `off` = matikan |
 | `PASTELAN_PUSH_SUBJECT` | | URL repo PasteLAN | Kontak di token VAPID untuk layanan push (`mailto:…` atau `https://…`) |
 | `PASTELAN_TLS_CERT` / `PASTELAN_TLS_KEY` | | – | Opsional: HTTPS langsung tanpa reverse proxy |
 

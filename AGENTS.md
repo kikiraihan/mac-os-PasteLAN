@@ -52,10 +52,23 @@ Merge ke `main` dengan versi yang belum punya tag akan otomatis membuat tag `v<v
     `server/AGENTS.md` (jangan salin password contoh dari `deploy/pastelan.env.example`).
     Notifikasi PWA: Web Push (`server/push.go`, VAPID + `aes128gcm`, kunci `push-key.pem` di folder data, langganan
     per perangkat di `devices.json`), hanya untuk `POST /api/text|image?notify=1` (⌃ + klik di menu Mac), bukan autosync;
-    server hanya menghubungi host layanan push yang dikenal (`pushHosts`).
+    server hanya menghubungi host layanan push yang dikenal (`pushHosts`) dan `api.github.com` (info rilis APK).
+    Unduh aplikasi Android dari web (`server/release.go`): `GET /api/app/android` (info, tanpa login) dan
+    `GET /unduh/PasteLAN.apk` (tanpa login → 302 ke `PasteLAN.apk` di rilis GitHub, tautan dicek harus
+    `https://github.com/<repo>/releases/download/`). Ditawarkan di PWA (spanduk khusus browser Android, bisa ditutup &
+    diingat; bagian Pengaturan; ajakan di form masuk), admin (Ringkasan → Aplikasi Android), dan dialog "Tambah HP" Mac.
     CI/CD server: `server-ci.yml` (cek + build) dan `deploy-server.yml` (push `main` yang mengubah `server/` → SSH →
     `server/deploy/deploy.sh`: backup, health check, rollback otomatis). Panduan: `server/CICD.md`.
-- Versi di `Resources/Info.plist` berlaku untuk keduanya (satu rilis = aplikasi Mac + binary server).
+  - Aplikasi Android: `android/` (Kotlin + Compose, hanya metode server), panduan [`android/README.md`](android/README.md).
+    Satu koneksi long-poll per proses (`Sync`), dipegang layar utama & `SyncService` (layanan latar depan, tanpa FCM);
+    kiriman baru dari perangkat lain → notifikasi dengan tombol **Salin** (`Notifier` → `ActionReceiver`). Item server
+    punya `notify` (dikirim dengan `?notify=1`) untuk mode "hanya kiriman dengan notifikasi". Isi notifikasi
+    `VISIBILITY_PRIVATE`; gambar hanya di folder cache dan dibuang saat hilang dari riwayat. Token di Android Keystore.
+    Cek: `cd android && ./gradlew testDebugUnitTest assembleDebug` (butuh Android SDK, `local.properties`) +
+    `./scripts/test-android.sh` (klien ⇄ server Go asli). `UiTest` (Robolectric) menyimpan screenshot di
+    `android/app/build/screenshots/`.
+- Versi di `Resources/Info.plist` berlaku untuk semuanya (satu rilis = aplikasi Mac + binary server + `PasteLAN.apk`;
+  Android membaca versionName / versionCode dari file itu).
 - Rencana kerja ada di `_todo/` (satu folder per inisiatif: file sprint + `00-tracker.md`).
   Perbarui tracker setiap kali tugas selesai.
 - Ide yang ditunda / utang teknis ada di `_techdebt/`.
