@@ -14,10 +14,65 @@ permissions:
   contents: write
 
 jobs:
+  # Aplikasi Android (android/, Kotlin + Compose): tes unit & tampilan, tes klien ⇄ server Go asli, lalu APK.
+  # PasteLAN.apk (bertanda tangan kunci rilis) ikut rilis yang sama — butuh secret ANDROID_KEYSTORE_*
+  # (lihat android/README.md). Tanpa secret: hanya artefak PasteLAN-debug.apk di halaman run Actions.
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache: false
+
+      - name: Tes unit & build debug
+        working-directory: android
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+
+      - name: Tes klien Android ⇄ server
+        run: ./scripts/test-android.sh
+
+      - name: Build rilis bertanda tangan
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          mkdir -p ../dist
+          cp app/build/outputs/apk/debug/app-debug.apk ../dist/PasteLAN-debug.apk
+          if [ -z "$ANDROID_KEYSTORE_B64" ]; then
+            echo "::warning::Secret ANDROID_KEYSTORE_B64 belum diatur → rilis tanpa PasteLAN.apk (lihat android/README.md)"
+            exit 0
+          fi
+          echo "$ANDROID_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/pastelan.jks"
+          ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/pastelan.jks" ./gradlew --no-daemon assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk ../dist/PasteLAN.apk
+          rm -f "$RUNNER_TEMP/pastelan.jks"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PasteLAN-android
+          path: dist/*.apk
+
   build:
+    needs: android
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
+      # APK dari job android → ikut diunggah & dirilis bersama aplikasi Mac dan binary server
+      - uses: actions/download-artifact@v4
+        with:
+          name: PasteLAN-android
+          path: dist
 
       # versi rilis = CFBundleShortVersionString di Info.plist → tag v<versi>
       - name: Baca versi
@@ -86,6 +141,7 @@ jobs:
             dist/PasteLAN.zip
             dist/install-PasteLAN.zip
             dist/pastelan-server-linux-*
+            dist/*.apk
 
       - name: Rilis (kalau push tag v*)
         if: startsWith(github.ref, 'refs/tags/v')
@@ -97,6 +153,7 @@ jobs:
             dist/install-PasteLAN.zip
             dist/pastelan-server-linux-amd64
             dist/pastelan-server-linux-arm64
+            dist/PasteLAN.apk
 
       # merge ke main dengan versi baru (tag belum ada) → tag + rilis dibuat otomatis
       - name: Rilis otomatis (push ke main, versi belum dirilis)
@@ -113,3 +170,4 @@ jobs:
             dist/install-PasteLAN.zip
             dist/pastelan-server-linux-amd64
             dist/pastelan-server-linux-arm64
+            dist/PasteLAN.apk

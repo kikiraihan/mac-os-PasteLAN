@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PasteLAN" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/background</item>
+    </style>
+    <!-- Bagikan → PasteLAN: jendela transparan tanpa isi, hanya toast "Terkirim".
+         (bukan windowNoDisplay: aktivitas itu wajib selesai sebelum onResume, padahal pengiriman lewat jaringan) -->
+    <style name="Theme.PasteLAN.Invisible" parent="android:Theme.Translucent.NoTitleBar">
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
+    <color name="background">#FFF5F5F7</color>
+    <color name="icon_bg">#FF007AFF</color>
+</resources>

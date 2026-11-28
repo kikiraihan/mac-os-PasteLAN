@@ -32,6 +32,7 @@ type item struct {
 	Time   int64  `json:"time"` // ms sejak epoch
 	From   string `json:"from"` // nama perangkat pengirim
 	Device string `json:"device"`
+	Notify bool   `json:"notify,omitempty"` // dikirim dengan ?notify=1 (⌃ + klik di Mac) → aplikasi Android bisa hanya memberi tahu yang ini
 	data   []byte
 	at     time.Time
 }

@@ -274,8 +274,9 @@ func (a *app) postText(w http.ResponseWriter, r *http.Request, d *device) {
 		jsonError(w, http.StatusBadRequest, "teks kosong / tidak valid")
 		return
 	}
-	it := a.store.add(&item{Kind: "text", Text: string(b), Size: len(b), From: d.Name, Device: d.ID})
-	if r.URL.Query().Get("notify") == "1" {
+	notify := r.URL.Query().Get("notify") == "1"
+	it := a.store.add(&item{Kind: "text", Text: string(b), Size: len(b), From: d.Name, Device: d.ID, Notify: notify})
+	if notify {
 		a.notifyDevices(it, d.ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": it.ID})
@@ -307,8 +308,9 @@ func (a *app) postImage(w http.ResponseWriter, r *http.Request, d *device) {
 		jsonError(w, http.StatusUnsupportedMediaType, "bukan gambar yang didukung (PNG, JPEG, GIF, WebP, HEIC)")
 		return
 	}
-	it := a.store.add(&item{Kind: "image", Mime: mime, Size: len(b), From: d.Name, Device: d.ID, data: b})
-	if r.URL.Query().Get("notify") == "1" {
+	notify := r.URL.Query().Get("notify") == "1"
+	it := a.store.add(&item{Kind: "image", Mime: mime, Size: len(b), From: d.Name, Device: d.ID, Notify: notify, data: b})
+	if notify {
 		a.notifyDevices(it, d.ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": it.ID})

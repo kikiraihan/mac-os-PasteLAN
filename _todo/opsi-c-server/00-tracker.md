@@ -42,6 +42,15 @@ sebagai aplikasi. Opsi A tetap terdokumentasi di `../opsi-a-mac-app-plus-browser
 - [x] v1.9.0: **Dengarkan kiriman dari server** (saat autosync mati, mode server): Mac tetap long-poll tanpa mengirim
       copy; kiriman HP / browser masuk riwayat (clipboard tidak ditimpa), titik di kanan atas ikon menu bar + titik
       biru di baris clip sampai menu ditutup. Pengaturan → Umum / menu, default nyala
+- [x] v1.15.0: **aplikasi Android** (`android/`, Kotlin + Compose): notifikasi kiriman baru dengan tombol **Salin**
+      (teks & gambar langsung ke clipboard tanpa membuka aplikasi), koneksi latar tanpa FCM, mode semua / hanya ⌃-klik,
+      salin otomatis, riwayat (ketuk = salin, tekan lama = salin / bagikan / hapus), kirim teks & gambar, Bagikan →
+      PasteLAN, masuk dengan scan QR / link setup / password, periksa pembaruan. Server: item punya `notify`.
+      Tes: `ParseTest`, `UiTest` (Robolectric + screenshot), `scripts/test-android.sh`; CI job `android` di `build.yml`
+- [ ] Pemilik: buat kunci tanda tangan Android + secret `ANDROID_KEYSTORE_*` (`android/README.md`) supaya rilis berisi
+      `PasteLAN.apk`
+- [ ] Uji aplikasi Android di HP nyata: scan QR, notifikasi → Salin (teks & gambar), salin otomatis, aplikasi ditutup,
+      HP restart, Bagikan → PasteLAN
 - [ ] Uji "Dengarkan kiriman dari server" di Mac nyata (tampilan titik di menu bar terang / gelap)
 - [ ] Uji notifikasi di HP nyata: Android (tombol Salin) & iPhone ter-install (ketuk → Salin)
 - [ ] Uji di Mac & HP nyata: login, install PWA, kirim dua arah, cabut perangkat

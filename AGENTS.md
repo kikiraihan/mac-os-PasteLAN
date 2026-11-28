@@ -55,7 +55,16 @@ Merge ke `main` dengan versi yang belum punya tag akan otomatis membuat tag `v<v
     server hanya menghubungi host layanan push yang dikenal (`pushHosts`).
     CI/CD server: `server-ci.yml` (cek + build) dan `deploy-server.yml` (push `main` yang mengubah `server/` → SSH →
     `server/deploy/deploy.sh`: backup, health check, rollback otomatis). Panduan: `server/CICD.md`.
-- Versi di `Resources/Info.plist` berlaku untuk keduanya (satu rilis = aplikasi Mac + binary server).
+  - Aplikasi Android: `android/` (Kotlin + Compose, hanya metode server), panduan [`android/README.md`](android/README.md).
+    Satu koneksi long-poll per proses (`Sync`), dipegang layar utama & `SyncService` (layanan latar depan, tanpa FCM);
+    kiriman baru dari perangkat lain → notifikasi dengan tombol **Salin** (`Notifier` → `ActionReceiver`). Item server
+    punya `notify` (dikirim dengan `?notify=1`) untuk mode "hanya kiriman dengan notifikasi". Isi notifikasi
+    `VISIBILITY_PRIVATE`; gambar hanya di folder cache dan dibuang saat hilang dari riwayat. Token di Android Keystore.
+    Cek: `cd android && ./gradlew testDebugUnitTest assembleDebug` (butuh Android SDK, `local.properties`) +
+    `./scripts/test-android.sh` (klien ⇄ server Go asli). `UiTest` (Robolectric) menyimpan screenshot di
+    `android/app/build/screenshots/`.
+- Versi di `Resources/Info.plist` berlaku untuk semuanya (satu rilis = aplikasi Mac + binary server + `PasteLAN.apk`;
+  Android membaca versionName / versionCode dari file itu).
 - Rencana kerja ada di `_todo/` (satu folder per inisiatif: file sprint + `00-tracker.md`).
   Perbarui tracker setiap kali tugas selesai.
 - Ide yang ditunda / utang teknis ada di `_techdebt/`.

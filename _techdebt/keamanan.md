@@ -60,6 +60,20 @@
 - Kunci ada di fragment URL → tidak dikirim ke jaringan, tapi tersimpan di riwayat / bookmark browser HP.
 - Port lokal hanya terbuka saat metode Wi-Fi lokal dipilih dan "Berbagi aktif".
 
+## Aplikasi Android (v1.15.0)
+
+- Token perangkat sama dengan PWA / Mac (hash di server, bisa dicabut), disimpan AES-GCM dengan kunci Android Keystore;
+  `allowBackup=false`. Hanya HTTPS (`network_security.xml`), kecuali localhost / emulator untuk uji lokal.
+- Notifikasi tanpa FCM: isi clipboard tidak pernah lewat Google. Isi notifikasi `VISIBILITY_PRIVATE` (layar kunci
+  hanya "Kiriman baru dari …"). Teks ≤ 60 rb karakter ikut di PendingIntent tombol Salin (IMMUTABLE, receiver tidak
+  diekspor); lebih panjang / gambar diambil lagi dari server saat diketuk.
+- Gambar disimpan di folder cache aplikasi (dibagikan ke clipboard lewat FileProvider `images/` saja), dibuang saat
+  item hilang dari riwayat server atau saat keluar. Clipboard HP hanya dibaca saat aplikasi di depan (tombol Tempel,
+  isi otomatis link setup).
+- Pemindai QR memakai Google Play services code scanner (diproses di HP, tanpa izin kamera untuk aplikasi).
+- Pembaruan tidak dipasang otomatis: tombol Unduh membuka `PasteLAN.apk` di browser; Android menolak APK dengan
+  tanda tangan berbeda dari yang terpasang. Kunci rilis hanya di secret CI (`ANDROID_KEYSTORE_*`).
+
 ## Ide lanjutan (belum perlu)
 
 - Enkripsi ujung-ke-ujung (kunci dari password, WebCrypto ⇄ CryptoKit) kalau server dipakai bersama / tidak dipercaya.
